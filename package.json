@@ -1,0 +1,16 @@
+{
+  "name": "discord-event-bot",
+  "version": "1.0.0",
+  "description": "Discord Bot for Event Attendance with Categories",
+  "main": "index.js",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "express": "^5.2.1",
+    "mongoose": "^9.6.3"
+  }
+}
