@@ -24,6 +24,7 @@ const express  = require('express');
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const MONGO_URI = process.env.MONGOTOKEN;
 const MEMBER_ROLE_ID         = '1472776595554042049';
+const RENAME_LOG_CHANNEL_ID  = '1507318365864071178'; // channel สำหรับ log การเปลี่ยนชื่อ
 
 const ALLOWED_ROLE_IDS = [
     '1472701329146380481', // Head
@@ -128,6 +129,19 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
     function getUserTag(member, user) {
         return user.id; // เก็บ userId เพื่อ tag และ match ได้ถูกต้อง
+    }
+
+    // ── ส่ง log การเปลี่ยนชื่อ ─────────────────────────────
+    async function sendRenameLog(guildObj, oldName, newName, reason = '') {
+        const logChannel = guildObj.channels.cache.get(RENAME_LOG_CHANNEL_ID);
+        if (!logChannel) return;
+        const embed = new EmbedBuilder()
+            .setTitle('✏️ เปลี่ยนชื่อสมาชิก')
+            .setDescription(`**${oldName}** ➜ **${newName}**`)
+            .addFields({ name: '📌 สาเหตุ', value: reason || 'ไม่ระบุ' })
+            .setColor(0xFEE75C)
+            .setTimestamp();
+        await logChannel.send({ embeds: [embed] }).catch(() => {});
     }
 
     // ดึง displayName จาก userId — ถ้าไม่เจอใช้ fallback
@@ -337,10 +351,12 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                         const bracketSuffix = bracketMatch ? bracketMatch[1] : currentName;
                         const finalName     = `${data.displayName} (${bracketSuffix})`;
 
+                        const oldNickname = member.displayName;
                         await member.setNickname(finalName).catch(() => {});
                         sync.lastDisplayName = data.displayName;
                         await sync.save();
                         console.log(`🔄 เปลี่ยนชื่อ ${sync.discordId} → ${finalName}`);
+                        await sendRenameLog(guild, oldNickname, finalName, '🔄 Roblox Display Name เปลี่ยน (อัตโนมัติ)');
                     } catch { /* ข้ามถ้า fetch ล้มเหลว */ }
 
                     // delay 500ms ต่อคน กันโดน rate limit
@@ -1009,9 +1025,11 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                 { upsert: true }
             );
 
-            const finalName = `${displayName} (${nickname})`;
+            const finalName  = `${displayName} (${nickname})`;
+            const oldName2   = interaction.member.displayName;
             await interaction.member.setNickname(finalName).catch(() => {});
             await interaction.member.roles.add(MEMBER_ROLE_ID).catch(() => {});
+            await sendRenameLog(interaction.guild, oldName2, finalName, '📝 ลงทะเบียนสมาชิกใหม่');
 
 
             return interaction.editReply(`✅ ลงทะเบียนเรียบร้อยแล้ว!\n🎮 Roblox: **${robloxUsername}**\n✨ ชื่อใหม่: **${finalName}**\n🏅 ได้รับยศ MEMBER แล้ว!\nบอทจะเช็คชื่อทุก 5 นาทีนะ`);
@@ -1061,26 +1079,20 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             const notFound = [];
 
             for (const uid of userIds) {
-                // ดึง displayName จาก guild member
-                let displayName;
-                try {
-                    const member = await interaction.guild.members.fetch(uid);
-                    displayName  = member.displayName;
-                } catch {
-                    notFound.push(uid);
-                    continue;
-                }
+                // ตรวจว่า member อยู่ใน guild จริงไหม
+                const m = await interaction.guild.members.fetch(uid).catch(() => null);
+                if (!m) { notFound.push(uid); continue; }
 
-                // เช็คซ้ำ
-                const alreadyIn = event.participants.includes(displayName) || event.waitingList.some(p => p.userTag === displayName);
-                if (alreadyIn) { skipped.push(displayName); continue; }
+                // เช็คซ้ำด้วย userId
+                const alreadyIn = event.participants.includes(uid) || event.waitingList.some(p => p.userTag === uid);
+                if (alreadyIn) { skipped.push(m.displayName); continue; }
 
                 if (event.maxSlots === 0 || event.participants.length < event.maxSlots) {
-                    event.participants.push(displayName);
-                    added.push(displayName);
+                    event.participants.push(uid);  // เก็บ userId
+                    added.push(m.displayName);
                 } else {
-                    event.waitingList.push({ userTag: displayName, wantMain: true });
-                    added.push(`${displayName} (คิวรอ)`);
+                    event.waitingList.push({ userTag: uid, wantMain: true });  // เก็บ userId
+                    added.push(`${m.displayName} (คิวรอ)`);
                 }
             }
             await event.save();
@@ -1143,18 +1155,18 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         } = interaction;
         const eventId = values[0];
 
-        try {
-
         // ── ดูกิจกรรมเพื่อลงชื่อ ──────────────────────────
         if (customId === 'select_view_event') {
-            await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
-            const event = await Event.findOne({ eventId });
-            if (!event) return interaction.editReply('😕 หากิจกรรมนี้ไม่เจอแล้ว');
-            if (!event.active) return interaction.editReply('❌ กิจกรรมนี้ปิดรับแล้วนะ');
+            const event = await Event.findOne({
+                eventId
+            });
+            if (!event) return interaction.reply(E('😕 หากิจกรรมนี้ไม่เจอแล้ว'));
+            if (!event.active) return interaction.reply(E('❌ กิจกรรมนี้ปิดรับแล้วนะ'));
 
-            return interaction.editReply({
+            return interaction.reply({
                 embeds: [await buildEventEmbed(event, interaction.guild)],
                 components: [buildJoinButtons(eventId)],
+                flags: [MessageFlags.Ephemeral],
             });
         }
 
@@ -1256,17 +1268,22 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
     // ── สรุปรายชื่อ ────────────────────────────────────
         if (customId === 'select_export_event') {
-            const event = await Event.findOne({
-                eventId
-            });
+            const event = await Event.findOne({ eventId });
             if (!event) return interaction.reply(E('😕 หากิจกรรมนี้ไม่เจอแล้ว'));
 
-            const mainList = event.participants.length
-            ? event.participants.map((u, i) => `${i + 1}. ${u}`).join('\n'): '_ไม่มีรายชื่อ_';
-            const waitList = event.waitingList.length
-            ? event.waitingList.map((p, i) => `${i + 1}. ${p.userTag}  ${p.wantMain ? '': ''}`).join('\n'): '_ไม่มีรายชื่อสำรอง_';
-            const attendedList = (event.attendedUserTags ?? []).length
-            ? event.attendedUserTags.map((u, i) => `${i + 1}. ${u}`).join('\n'): '_ยังไม่มีการเช็คชื่อ_';
+            // resolve ชื่อจาก userId ทั้งหมด
+            const resolvedMain     = await resolveList(interaction.guild, event.participants);
+            const resolvedWait     = await Promise.all(event.waitingList.map(async p => ({
+                ...p, display: await resolveDisplayName(interaction.guild, p.userTag)
+            })));
+            const resolvedAttended = await resolveList(interaction.guild, event.attendedUserTags ?? []);
+
+            const mainList     = resolvedMain.length
+                ? resolvedMain.map((u, i) => `${i + 1}. ${u}`).join('\n') : '_ไม่มีรายชื่อ_';
+            const waitList     = resolvedWait.length
+                ? resolvedWait.map((p, i) => `${i + 1}. ${p.display}  ${p.wantMain ? '(รอคิว)' : '(สำรอง)'}`).join('\n') : '_ไม่มีรายชื่อสำรอง_';
+            const attendedList = resolvedAttended.length
+                ? resolvedAttended.map((u, i) => `${i + 1}. ${u}`).join('\n') : '_ยังไม่มีการเช็คชื่อ_';
 
             const embed = new EmbedBuilder()
             .setTitle(`📊 สรุปรายชื่อ: ${event.title}`)
@@ -1432,18 +1449,6 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             }
 
             return interaction.reply(E('😅 คุณยังไม่ได้ลงชื่อในกิจกรรมนี้นะ'));
-        }
-
-        } catch (err) {
-            console.error('❌ Select Menu Error:', err);
-            try {
-                const msg = '❌ เกิดข้อผิดพลาด ลองใหม่อีกทีนะ';
-                if (interaction.deferred || interaction.replied) {
-                    await interaction.editReply({ content: msg });
-                } else {
-                    await interaction.reply({ content: msg, flags: [MessageFlags.Ephemeral] });
-                }
-            } catch { /* interaction หมดอายุไปแล้ว ข้ามได้ */ }
         }
     });
 
