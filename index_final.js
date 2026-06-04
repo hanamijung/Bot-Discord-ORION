@@ -1143,18 +1143,18 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         } = interaction;
         const eventId = values[0];
 
+        try {
+
         // ── ดูกิจกรรมเพื่อลงชื่อ ──────────────────────────
         if (customId === 'select_view_event') {
-            const event = await Event.findOne({
-                eventId
-            });
-            if (!event) return interaction.reply(E('😕 หากิจกรรมนี้ไม่เจอแล้ว'));
-            if (!event.active) return interaction.reply(E('❌ กิจกรรมนี้ปิดรับแล้วนะ'));
+            await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+            const event = await Event.findOne({ eventId });
+            if (!event) return interaction.editReply('😕 หากิจกรรมนี้ไม่เจอแล้ว');
+            if (!event.active) return interaction.editReply('❌ กิจกรรมนี้ปิดรับแล้วนะ');
 
-            return interaction.reply({
+            return interaction.editReply({
                 embeds: [await buildEventEmbed(event, interaction.guild)],
                 components: [buildJoinButtons(eventId)],
-                flags: [MessageFlags.Ephemeral],
             });
         }
 
@@ -1432,6 +1432,18 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             }
 
             return interaction.reply(E('😅 คุณยังไม่ได้ลงชื่อในกิจกรรมนี้นะ'));
+        }
+
+        } catch (err) {
+            console.error('❌ Select Menu Error:', err);
+            try {
+                const msg = '❌ เกิดข้อผิดพลาด ลองใหม่อีกทีนะ';
+                if (interaction.deferred || interaction.replied) {
+                    await interaction.editReply({ content: msg });
+                } else {
+                    await interaction.reply({ content: msg, flags: [MessageFlags.Ephemeral] });
+                }
+            } catch { /* interaction หมดอายุไปแล้ว ข้ามได้ */ }
         }
     });
 
