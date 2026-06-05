@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const {
     Client,
     GatewayIntentBits,
@@ -1618,24 +1620,54 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         const cacheKey = parts[1];
         const page     = parseInt(parts[2]);
 
-        const cached = robloxListCache.get(cacheKey);
-        if (!cached) return interaction.reply(E('⏰ หมดเวลาแล้ว กรุณาใช้ /robloxlist ใหม่นะ'));
+        // ฟังก์ชัน rebuild pages จาก DB เมื่อ cache หมดอายุ
+        async function getRobloxPages(guildObj) {
+            const syncs = await RobloxSync.find({});
+            const lines = [];
+            for (const sync of syncs) {
+                const m = await guildObj.members.fetch(sync.discordId).catch(() => null);
+                const discordName = m ? m.displayName : `<@${sync.discordId}>`;
+                lines.push(`**${discordName}**\n🎮 Roblox Username: \`${sync.robloxUsername || sync.lastDisplayName}\``);
+            }
+            const PAGE = 10;
+            const pages = [];
+            for (let i = 0; i < lines.length; i += PAGE)
+                pages.push(lines.slice(i, i + PAGE).join('\n\n'));
+            return { pages, total: syncs.length };
+        }
+
+        let cached = robloxListCache.get(cacheKey);
+
+        // ถ้า cache หมดอายุ ดึงใหม่จาก DB อัตโนมัติ
+        if (!cached) {
+            const fresh = await getRobloxPages(interaction.guild);
+            robloxListCache.set(cacheKey, fresh);
+            setTimeout(() => robloxListCache.delete(cacheKey), 10 * 60_000);
+            cached = fresh;
+        }
 
         const { pages, total } = cached;
-        if (page < 0 || page >= pages.length) return interaction.reply(E('❌ หน้าไม่ถูกต้อง'));
+        const safePage = Math.min(Math.max(page, 0), pages.length - 1);
 
         const embed = new EmbedBuilder()
             .setTitle(`📋 รายชื่อ Roblox ทั้งหมด (${total} คน)`)
-            .setDescription(pages[page])
+            .setDescription(pages[safePage])
             .setColor(0x5865F2)
-            .setFooter({ text: `หน้า ${page + 1}/${pages.length}  •  ทั้งหมด ${total} คน` });
+            .setFooter({ text: `หน้า ${safePage + 1}/${pages.length}  •  ทั้งหมด ${total} คน` });
 
         const components = [new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId(`rlp||${cacheKey}||${page - 1}`).setLabel('◀ ก่อนหน้า').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
-            new ButtonBuilder().setCustomId(`rlp||${cacheKey}||${page + 1}`).setLabel('▶ ถัดไป').setStyle(ButtonStyle.Secondary).setDisabled(page === pages.length - 1),
+            new ButtonBuilder().setCustomId(`rlp||${cacheKey}||${safePage - 1}`).setLabel('◀ ก่อนหน้า').setStyle(ButtonStyle.Secondary).setDisabled(safePage === 0),
+            new ButtonBuilder().setCustomId(`rlp||${cacheKey}||${safePage + 1}`).setLabel('▶ ถัดไป').setStyle(ButtonStyle.Secondary).setDisabled(safePage === pages.length - 1),
         )];
 
-        return interaction.update({ embeds: [embed], components });
+        try {
+            await interaction.update({ embeds: [embed], components });
+        } catch (err) {
+            if (err?.code === 40060 || err?.code === 10062) {
+                // Interaction หมดอายุหรือ acknowledged ไปแล้ว — ลอง followUp แทน
+                await interaction.followUp({ embeds: [embed], components, flags: [MessageFlags.Ephemeral] }).catch(() => {});
+            }
+        }
     });
 
     process.on('unhandledRejection', (err) => console.error('Unhandled rejection:', err));
