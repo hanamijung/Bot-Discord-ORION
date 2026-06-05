@@ -61,6 +61,7 @@ const client = new Client( {
 //  COOLDOWN
 // ════════════════════════════════════════════════════════
 const cooldownMap = new Map();
+const robloxListCache = new Map(); // cache สำหรับ /robloxlist pagination
 
 function checkCooldown(userId, eventId) {
     const key = `${userId}:${eventId}`;
@@ -594,11 +595,16 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                 .setColor(0x5865F2)
                 .setFooter({ text: `หน้า 1/${pages.length}  •  ทั้งหมด ${syncs.length} คน` });
 
+            // เก็บ pages ใน cache แทนการยัดใน customId (กัน error customId เกิน 100 ตัวอักษร)
+            const cacheKey = `${interaction.user.id}_${Date.now()}`;
+            robloxListCache.set(cacheKey, { pages, total: syncs.length });
+            setTimeout(() => robloxListCache.delete(cacheKey), 10 * 60_000); // expire 10 นาที
+
             const components = [];
             if (pages.length > 1) {
                 components.push(new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('robloxlist_page||0||-1').setLabel('◀ ก่อนหน้า').setStyle(ButtonStyle.Secondary).setDisabled(true),
-                    new ButtonBuilder().setCustomId(`robloxlist_page||${JSON.stringify(pages)}||1`).setLabel('▶ ถัดไป').setStyle(ButtonStyle.Secondary).setDisabled(pages.length <= 1),
+                    new ButtonBuilder().setCustomId(`rlp||${cacheKey}||0`).setLabel('◀ ก่อนหน้า').setStyle(ButtonStyle.Secondary).setDisabled(true),
+                    new ButtonBuilder().setCustomId(`rlp||${cacheKey}||1`).setLabel('▶ ถัดไป').setStyle(ButtonStyle.Secondary).setDisabled(pages.length <= 1),
                 ));
             }
             return interaction.editReply({ embeds: [embed], components });
@@ -1599,6 +1605,37 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         const pageData = await buildCheckinPage(interaction, event, page);
         try { return await interaction.update(pageData); }
         catch { return await interaction.reply(pageData); }
+    });
+
+    // ════════════════════════════════════════════════════════
+    //  BUTTON: rlp|| (robloxlist pagination)
+    // ════════════════════════════════════════════════════════
+    client.on('interactionCreate', async (interaction) => {
+        if (!interaction.isButton()) return;
+        if (!interaction.customId.startsWith('rlp||')) return;
+
+        const parts    = interaction.customId.split('||');
+        const cacheKey = parts[1];
+        const page     = parseInt(parts[2]);
+
+        const cached = robloxListCache.get(cacheKey);
+        if (!cached) return interaction.reply(E('⏰ หมดเวลาแล้ว กรุณาใช้ /robloxlist ใหม่นะ'));
+
+        const { pages, total } = cached;
+        if (page < 0 || page >= pages.length) return interaction.reply(E('❌ หน้าไม่ถูกต้อง'));
+
+        const embed = new EmbedBuilder()
+            .setTitle(`📋 รายชื่อ Roblox ทั้งหมด (${total} คน)`)
+            .setDescription(pages[page])
+            .setColor(0x5865F2)
+            .setFooter({ text: `หน้า ${page + 1}/${pages.length}  •  ทั้งหมด ${total} คน` });
+
+        const components = [new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`rlp||${cacheKey}||${page - 1}`).setLabel('◀ ก่อนหน้า').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+            new ButtonBuilder().setCustomId(`rlp||${cacheKey}||${page + 1}`).setLabel('▶ ถัดไป').setStyle(ButtonStyle.Secondary).setDisabled(page === pages.length - 1),
+        )];
+
+        return interaction.update({ embeds: [embed], components });
     });
 
     process.on('unhandledRejection', (err) => console.error('Unhandled rejection:', err));
