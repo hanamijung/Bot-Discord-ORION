@@ -353,6 +353,18 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             console.error('❌ ต่อ MongoDB ไม่ได้:', err.message);
         }
 
+        // ── Register Slash Commands ──────────────────────────
+        try {
+            const rest   = new REST({ version: '10' }).setToken(BOT_TOKEN);
+            const guilds = client.guilds.cache.map(g => g.id);
+            for (const guildId of guilds) {
+                await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), { body: commands });
+            }
+            console.log('✅ Register Slash Commands สำเร็จ!');
+        } catch (err) {
+            console.error('❌ Register Slash Commands ไม่ได้:', err.message);
+        }
+
         // Roblox Sync — เช็ค Display Name ทุก 5 นาที
         setInterval(async () => {
             console.log(`[SYNC] เริ่ม sync รอบใหม่ — ${new Date().toLocaleTimeString('th-TH')}`);
@@ -468,18 +480,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             .addUserOption(o => o.setName('user').setDescription('สมาชิกที่ต้องการดู').setRequired(true)),
     ].map(c => c.toJSON());
 
-    client.once('clientReady', async () => {
-        const rest = new REST({ version: '10' }).setToken(BOT_TOKEN);
-        try {
-            const guilds = client.guilds.cache.map(g => g.id);
-            for (const guildId of guilds) {
-                await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), { body: commands });
-            }
-            console.log('✅ Register Slash Commands สำเร็จ!');
-        } catch (err) {
-            console.error('❌ Register Slash Commands ไม่ได้:', err.message);
-        }
-    });
+    // ── Register Slash Commands ถูกย้ายเข้าใน clientReady ด้านบนแล้ว ──
 
     // ── messageCreate (ลบข้อความใน channel ที่ล็อค) ──
     client.on('messageCreate', async (message) => {
@@ -1457,8 +1458,8 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                 if (idx !== -1) {
                     event.attendedUserTags.splice(idx, 1);
                     removed.push(userTag);
-                    // ลบออกจากประวัติด้วย
-                    const uid = extractUserId(userTag);
+                    // ลบออกจากประวัติด้วย (userTag คือ userId ตรงๆ แล้ว)
+                    const uid = /^\d{17,20}$/.test(userTag) ? userTag : extractUserId(userTag);
                     if (uid) await History.findOneAndUpdate(
                         {
                             userId: uid
@@ -1499,8 +1500,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             if (waitIdx !== -1) {
                 const p = event.waitingList[waitIdx];
                 const pos = event.waitingList.slice(0, waitIdx + 1).filter(w => w.wantMain === p.wantMain).length;
-                const typeStr = p.wantMain ? '': '';
-                return safeReply(interaction, E(`⏳ คุณอยู่ใน **${typeStr}** ลำดับที่ **${pos}** — **"${event.title}"**`));
+                return safeReply(interaction, E('✅ คุณอยู่ในคิวของกิจกรรมนี้แล้ว'));
             }
 
             return safeReply(interaction, E('😅 คุณยังไม่ได้ลงชื่อในกิจกรรมนี้นะ'));
