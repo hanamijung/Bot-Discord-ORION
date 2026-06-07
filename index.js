@@ -338,6 +338,13 @@ const Event = mongoose.model('Event', new mongoose.Schema({
     // ════════════════════════════════════════════════════════
     client.once('clientReady', async () => {
         console.log(`🤖 บอทออนไลน์แล้ว: ${client.user.tag}`);
+
+        console.log('--- รายชื่อ Guild ID ทั้งหมด ---');
+        client.guilds.cache.forEach(guild => {
+            console.log(`ชื่อเซิร์ฟเวอร์: ${guild.name} | ID: ${guild.id}`);
+        });
+        console.log('----------------------------');
+
         try {
             if (!MONGO_URI) throw new Error('ไม่เจอตัวแปร MONGOTOKEN');
             await mongoose.connect(MONGO_URI);
@@ -348,38 +355,64 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
         // Roblox Sync — เช็ค Display Name ทุก 5 นาที
         setInterval(async () => {
+            console.log(`[SYNC] เริ่ม sync รอบใหม่ — ${new Date().toLocaleTimeString('th-TH')}`);
             try {
                 const syncs = await RobloxSync.find({});
+                console.log(`[SYNC] พบ ${syncs.length} คนที่ลงทะเบียนไว้`);
                 for (const sync of syncs) {
                     try {
+                        console.log(`[SYNC] กำลังเช็ค discordId: ${sync.discordId} | robloxId: ${sync.robloxId}`);
                         const res  = await fetch(`https://users.roblox.com/v1/users/${sync.robloxId}`);
                         const data = await res.json();
-                        if (!data || !data.displayName) continue;
-                        if (data.displayName === sync.lastDisplayName) continue;
-                        if (!data.displayName.toUpperCase().startsWith('ORION')) continue;
+                        if (!data || !data.displayName) {
+                            console.log(`[SYNC] ⚠️ ดึงข้อมูล Roblox ไม่ได้ (${sync.robloxId})`);
+                            continue;
+                        }
+                        console.log(`[SYNC] Roblox displayName: "${data.displayName}" | DB lastDisplayName: "${sync.lastDisplayName}"`);
+                        if (!data.displayName.toUpperCase().startsWith('ORION')) {
+                            console.log(`[SYNC] ⛔ ข้าม — ชื่อไม่ขึ้นต้นด้วย ORION: "${data.displayName}"`);
+                            continue;
+                        }
 
                         const guild  = client.guilds.cache.first();
-                        if (!guild) continue;
+                        if (!guild) { console.log(`[SYNC] ⚠️ หา guild ไม่เจอ`); continue; }
                         const member = await guild.members.fetch(sync.discordId).catch(() => null);
-                        if (!member) continue;
+                        if (!member) { console.log(`[SYNC] ⚠️ หา member ไม่เจอ (${sync.discordId})`); continue; }
 
                         const currentName   = member.displayName;
                         const bracketMatch  = currentName.match(/[(](.+)[)]$/);
                         const bracketSuffix = bracketMatch ? bracketMatch[1] : currentName;
                         const finalName     = `${data.displayName} (${bracketSuffix})`;
 
+                        // เปลี่ยนถ้า: Roblox displayName เปลี่ยน หรือ Discord nickname ยังไม่ตรง
+                        const nameChanged   = data.displayName !== sync.lastDisplayName;
+                        const nicknameWrong = member.displayName !== finalName;
+                        console.log(`[SYNC] Discord nickname ปัจจุบัน: "${member.displayName}" | ควรเป็น: "${finalName}"`);
+                        console.log(`[SYNC] nameChanged=${nameChanged} | nicknameWrong=${nicknameWrong}`);
+                        if (!nameChanged && !nicknameWrong) {
+                            console.log(`[SYNC] ✅ ข้าม — ทุกอย่างถูกต้องแล้ว`);
+                            continue;
+                        }
+
                         const oldNickname = member.displayName;
-                        await member.setNickname(finalName).catch(() => {});
+                        await member.setNickname(finalName).catch((err) => {
+                            console.error(`[ERROR] setNickname ไม่ได้ (${sync.discordId}): ${err.message}`);
+                        });
                         sync.lastDisplayName = data.displayName;
                         await sync.save();
                         console.log(`🔄 เปลี่ยนชื่อ ${sync.discordId} → ${finalName}`);
                         await sendRenameLog(guild, oldNickname, finalName, '🔄 Roblox Display Name เปลี่ยน (อัตโนมัติ)');
-                    } catch { /* ข้ามถ้า fetch ล้มเหลว */ }
+                    } catch (err) {
+                        console.error(`[ERROR] sync ล้มเหลว (${sync.discordId}): ${err.message}`);
+                    }
 
                     // delay 500ms ต่อคน กันโดน rate limit
                     await new Promise(r => setTimeout(r, 500));
                 }
-            } catch { /* ข้ามถ้า DB ล้มเหลว */ }
+            } catch (err) {
+                console.error(`[ERROR] sync DB ล้มเหลว: ${err.message}`);
+            }
+            console.log(`[SYNC] จบรอบ sync — ${new Date().toLocaleTimeString('th-TH')}`);
         }, 5 * 60_000);
 
         // ปิดกิจกรรมที่หมดเวลาอัตโนมัติทุก 1 นาที
