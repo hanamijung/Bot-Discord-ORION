@@ -346,7 +346,8 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             console.log(`ชื่อเซิร์ฟเวอร์: ${guild.name} | ID: ${guild.id}`);
         });
         console.log('----------------------------');
-        mainGuildId = process.env.GUILD_ID || client.guilds.cache.first()?.id ?? null;
+        const firstGuild = client.guilds.cache.first();
+        mainGuildId = process.env.GUILD_ID || (firstGuild ? firstGuild.id : null);
         console.log(`🏠 Guild หลัก: ${mainGuildId}`);
 
         try {
