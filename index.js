@@ -119,6 +119,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         robloxId:        String,
         robloxUsername:  String,
         lastDisplayName: String,
+        birthday:        { type: String, default: null }, // รูปแบบ DD-MM
     }));
 
     // ════════════════════════════════════════════════════════
@@ -372,7 +373,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
         // Roblox Sync — เช็ค Display Name ทุก 5 นาที
         setInterval(async () => {
-            console.log(`[SYNC] เริ่ม sync รอบใหม่ — ${new Date().toLocaleTimeString('th-TH')}`);
+            console.log(`[SYNC] เริ่ม sync รอบใหม่ — ${new Date().toLocaleTimeString('th-TH', { timeZone: 'Asia/Bangkok' })}`);
             try {
                 const syncs = await RobloxSync.find({});
                 console.log(`[SYNC] พบ ${syncs.length} คนที่ลงทะเบียนไว้`);
@@ -434,7 +435,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             } catch (err) {
                 console.error(`[ERROR] sync DB ล้มเหลว: ${err.message}`);
             }
-            console.log(`[SYNC] จบรอบ sync — ${new Date().toLocaleTimeString('th-TH')}`);
+            console.log(`[SYNC] จบรอบ sync — ${new Date().toLocaleTimeString('th-TH', { timeZone: 'Asia/Bangkok' })}`);
         }, 5 * 60_000);
 
         // ปิดกิจกรรมที่หมดเวลาอัตโนมัติทุก 1 นาที
@@ -476,11 +477,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         new SlashCommandBuilder()
             .setName('setup-register')
             .setDescription('สร้างแผงลงทะเบียนสมาชิกใน channel นี้'),
-        new SlashCommandBuilder()
-            .setName('staff-remove')
-            .setDescription('ลบสมาชิกออกจากตำแหน่ง')
-            .addStringOption(o => o.setName('position').setDescription('ชื่อตำแหน่ง').setRequired(true))
-            .addStringOption(o => o.setName('member_name').setDescription('ชื่อสมาชิกที่จะลบ').setRequired(true)),
+
         new SlashCommandBuilder()
             .setName('robloxlist')
             .setDescription('ดึงรายชื่อ Roblox ของสมาชิกทุกคนที่ลงทะเบียนแล้ว'),
@@ -488,9 +485,104 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             .setName('robloxinfo')
             .setDescription('ดูข้อมูล Roblox ของสมาชิกคนที่ระบุ')
             .addUserOption(o => o.setName('user').setDescription('สมาชิกที่ต้องการดู').setRequired(true)),
+        new SlashCommandBuilder()
+            .setName('myprofile')
+            .setDescription('ดูข้อมูลของตัวเองที่ลงทะเบียนไว้'),
+        new SlashCommandBuilder()
+            .setName('memberlist')
+            .setDescription('ดูรายชื่อสมาชิกที่ลงทะเบียนแล้วและยังไม่ได้ลงทะเบียน'),
+        new SlashCommandBuilder()
+            .setName('birthdays')
+            .setDescription('ดูวันเกิดที่กำลังจะมาถึงในเดือนนี้'),
     ].map(c => c.toJSON());
 
+
+        // ── Birthday Check — เช็คทุกวัน 00:00 น. เวลาไทย ──────
+        const BIRTHDAY_CHANNEL_ID = '1513618012006125688';
+        const checkBirthday = async () => {
+            try {
+                const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Bangkok' }));
+                const tomorrow = new Date(now);
+                tomorrow.setDate(tomorrow.getDate() + 1);
+                const tomorrowDD = String(tomorrow.getDate()).padStart(2, '0');
+                const tomorrowMM = String(tomorrow.getMonth() + 1).padStart(2, '0');
+                const tomorrowStr = `${tomorrowDD}-${tomorrowMM}`;
+
+                const syncs = await RobloxSync.find({ birthday: tomorrowStr });
+                if (!syncs.length) return;
+
+                const guild = client.guilds.cache.get(mainGuildId);
+                if (!guild) return;
+
+                const channel = guild.channels.cache.get(BIRTHDAY_CHANNEL_ID);
+                if (!channel) return;
+
+                for (const sync of syncs) {
+                    const member = await guild.members.fetch(sync.discordId).catch(() => null);
+                    if (!member) continue;
+                    await channel.send(`🎂 พรุ่งนี้วันเกิด ${member} แล้วนะ!`);
+                }
+                console.log(`[BIRTHDAY] เช็ควันเกิดเสร็จ พบ ${syncs.length} คน`);
+            } catch (err) {
+                console.error(`[BIRTHDAY] error: ${err.message}`);
+            }
+        };
+
+        // รอจนถึง 00:00 น. เวลาไทยแล้วค่อย setInterval ทุก 24 ชั่วโมง
+        const scheduleDaily = (fn) => {
+            const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Bangkok' }));
+            const msUntilMidnight = (
+                (24 - now.getHours()) * 3600000 -
+                now.getMinutes() * 60000 -
+                now.getSeconds() * 1000 -
+                now.getMilliseconds()
+            ) % 86400000 || 86400000;
+            console.log(`[BIRTHDAY] จะเช็คครั้งแรกใน ${Math.round(msUntilMidnight / 60000)} นาที`);
+            setTimeout(() => {
+                fn();
+                setInterval(fn, 24 * 60 * 60 * 1000);
+            }, msUntilMidnight);
+        };
+        scheduleDaily(checkBirthday);
+
     // ── Register Slash Commands ถูกย้ายเข้าใน clientReady ด้านบนแล้ว ──
+
+
+    // ── Auto ลบ DB เมื่อสมาชิกออกจาก server ────────────────
+    client.on('guildMemberRemove', async (member) => {
+        try {
+            const sync = await RobloxSync.findOneAndDelete({ discordId: member.id });
+            if (sync) {
+                console.log(`[LEAVE] ลบข้อมูล DB ของ ${member.user.tag} (${member.id}) | Roblox: ${sync.lastDisplayName}`);
+                // ส่ง log ไปช่อง rename log ถ้ามี
+                const logChannel = member.guild.channels.cache.find(c => c.name.includes('log') || c.name.includes('rename'));
+                if (logChannel) {
+                    const embed = new EmbedBuilder()
+                        .setTitle('🚪 สมาชิกออกจาก Server')
+                        .setDescription(
+                            `👤 **Discord:** ${member.user.tag} (${member.id})\n` +
+                            `🎮 **Roblox:** ${sync.lastDisplayName}\n` +
+                            `🗑️ **ลบข้อมูลออกจาก DB แล้ว**`
+                        )
+                        .setColor(0xED4245)
+                        .setTimestamp();
+                    await logChannel.send({ embeds: [embed] }).catch(() => {});
+                }
+            }
+        } catch (err) {
+            console.error(`[LEAVE] error: ${err.message}`);
+        }
+    });
+
+    // ── Utility: fetch syncs + members in one go ────────────
+    const fetchAllSyncs = async (guild) => {
+        await guild.members.fetch();
+        const syncs = await RobloxSync.find({});
+        return syncs.map(sync => ({
+            sync,
+            member: guild.members.cache.get(sync.discordId) || null
+        }));
+    };
 
     // ── messageCreate (ลบข้อความใน channel ที่ล็อค) ──
     client.on('messageCreate', async (message) => {
@@ -617,8 +709,9 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             const bracketMatch  = currentName.match(/\((.+)\)$/);
             const bracketSuffix = bracketMatch ? bracketMatch[1] : currentName;
             const finalName     = `${displayName} (${bracketSuffix})`;
-            await targetMember.setNickname(finalName).catch(() => {});
-
+            await targetMember.setNickname(finalName).catch((err) => {
+                console.error(`[REGISTER] setNickname ไม่ได้ (${targetMember.id}): ${err.message}`);
+            });
 
             return interaction.editReply(`✅ ลงทะเบียน **${targetMember.displayName}** กับ Username **${robloxUsername}** เรียบร้อย! เปลี่ยนชื่อเป็น **${finalName}** แล้ว บอทจะเช็คชื่อทุก 5 นาทีนะ`);
         }
@@ -630,18 +723,15 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
             await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
-            const syncs = await RobloxSync.find({});
-            if (!syncs.length)
+            const allSyncs = await fetchAllSyncs(interaction.guild);
+            if (!allSyncs.length)
                 return interaction.editReply('😅 ยังไม่มีสมาชิกลงทะเบียนเลย');
 
-            // ดึง displayName ล่าสุดจาก Discord
-            const lines = [];
-            for (const sync of syncs) {
-                const m = await interaction.guild.members.fetch(sync.discordId).catch(() => null);
-                const discordName = m ? m.displayName : `<@${sync.discordId}>`;
-                lines.push(`**${discordName}**
-🎮 Roblox Username: \`${sync.robloxUsername || sync.lastDisplayName}\``);
-            }
+            const lines = allSyncs.map(({ sync, member }) => {
+                const discordName = member ? member.displayName : `<@${sync.discordId}>`;
+                return `**${discordName}**
+🎮 Roblox Username: \`${sync.robloxUsername || sync.lastDisplayName}\``;
+            });
 
             // แบ่งหน้าถ้าเกิน 10 คน
             const PAGE = 10;
@@ -650,14 +740,14 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                 pages.push(lines.slice(i, i + PAGE).join("\n\n"));
 
             const embed = new EmbedBuilder()
-                .setTitle(`📋 รายชื่อ Roblox ทั้งหมด (${syncs.length} คน)`)
+                .setTitle(`📋 รายชื่อ Roblox ทั้งหมด (${allSyncs.length} คน)`)
                 .setDescription(pages[0])
                 .setColor(0x5865F2)
-                .setFooter({ text: `หน้า 1/${pages.length}  •  ทั้งหมด ${syncs.length} คน` });
+                .setFooter({ text: `หน้า 1/${pages.length}  •  ทั้งหมด ${allSyncs.length} คน` });
 
             // เก็บ pages ใน cache แทนการยัดใน customId (กัน error customId เกิน 100 ตัวอักษร)
             const cacheKey = `${interaction.user.id}_${Date.now()}`;
-            robloxListCache.set(cacheKey, { pages, total: syncs.length });
+            robloxListCache.set(cacheKey, { pages, total: allSyncs.length });
             setTimeout(() => robloxListCache.delete(cacheKey), 10 * 60_000); // expire 10 นาที
 
             const components = [];
@@ -692,19 +782,121 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
             const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
 
+            const bdDisplay = sync.birthday
+                ? (() => { const [d, m] = sync.birthday.split('-'); return `${d}/${m}`; })()
+                : 'ไม่ได้ระบุ';
+
             const embed = new EmbedBuilder()
-                .setTitle(`🎮 ข้อมูล Roblox ของ ${targetMember?.displayName ?? targetUser.username}`)
+                .setTitle(`🎮 ข้อมูล Roblox ของ ${targetMember ? targetMember.displayName : targetUser.username}`)
                 .setDescription(
-                    `👤 **Discord:** <@${targetUser.id}>
-` +
-                    `🎮 **Roblox ID:** \`${sync.robloxId}\`
-` +
-                    `✨ **Display Name ปัจจุบัน:** ${currentDisplayName}
-` +
+                    `👤 **Discord:** <@${targetUser.id}>\n` +
+                    `🎮 **Roblox ID:** \`${sync.robloxId}\`\n` +
+                    `✨ **Display Name ปัจจุบัน:** ${currentDisplayName}\n` +
+                    `🎂 **วันเกิด:** ${bdDisplay}\n` +
                     `🔗 **Profile:** [คลิกดูโปรไฟล์](${profileUrl})`
                 )
                 .setColor(0xFEE75C)
                 .setFooter({ text: `ลงทะเบียนแล้ว • sync ทุก 5 นาที` });
+
+            return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
+        }
+
+
+        // /myprofile
+        if (commandName === 'myprofile') {
+            const sync = await RobloxSync.findOne({ discordId: interaction.user.id });
+            if (!sync)
+                return interaction.reply({ content: '😕 คุณยังไม่ได้ลงทะเบียนเลย กดปุ่มลงทะเบียนก่อนนะ', flags: [MessageFlags.Ephemeral] });
+
+            let currentDisplayName = sync.lastDisplayName;
+            try {
+                const res  = await fetch(`https://users.roblox.com/v1/users/${sync.robloxId}`);
+                const data = await res.json();
+                if (data && data.displayName) currentDisplayName = data.displayName;
+            } catch { /* ใช้ค่าเดิม */ }
+
+            const bdDisplay = sync.birthday
+                ? (() => { const [d, m] = sync.birthday.split('-'); return `${d}/${m}`; })()
+                : 'ไม่ได้ระบุ';
+
+            const embed = new EmbedBuilder()
+                .setTitle(`👤 โปรไฟล์ของ ${member.displayName}`)
+                .setDescription(
+                    `🎮 **Roblox Username:** \`${sync.robloxUsername || '-'}\`\n` +
+                    `✨ **Display Name:** ${currentDisplayName}\n` +
+                    `🆔 **Roblox ID:** \`${sync.robloxId}\`\n` +
+                    `🎂 **วันเกิด:** ${bdDisplay}\n` +
+                    `🔗 **Profile:** [คลิกดูโปรไฟล์](https://www.roblox.com/users/${sync.robloxId}/profile)`
+                )
+                .setColor(0x57F287)
+                .setFooter({ text: 'sync ทุก 5 นาที' });
+
+            return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
+        }
+
+
+        // /memberlist
+        if (commandName === 'memberlist') {
+            if (!hasPermission(member))
+                return interaction.reply({ content: '❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ', flags: [MessageFlags.Ephemeral] });
+
+            await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
+            const allData = await fetchAllSyncs(interaction.guild);
+            const registeredIds = new Set(allData.map(({ sync }) => sync.discordId));
+
+            const allMembers   = interaction.guild.members.cache.filter(m => !m.user.bot);
+            const registered   = allMembers.filter(m => registeredIds.has(m.id));
+            const unregistered = allMembers.filter(m => !registeredIds.has(m.id));
+
+            const regList   = registered.map(m => `✅ ${m.displayName}`).join('\n') || 'ไม่มี';
+            const unregList = unregistered.map(m => `❌ ${m.displayName}`).join('\n') || 'ไม่มี';
+
+            const embed = new EmbedBuilder()
+                .setTitle('📋 รายชื่อสมาชิก')
+                .addFields(
+                    { name: `✅ ลงทะเบียนแล้ว (${registered.size} คน)`, value: regList.slice(0, 1024) },
+                    { name: `❌ ยังไม่ได้ลงทะเบียน (${unregistered.size} คน)`, value: unregList.slice(0, 1024) }
+                )
+                .setColor(0x5865F2)
+                .setTimestamp();
+
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+
+        // /birthdays
+        if (commandName === 'birthdays') {
+            if (!hasPermission(member))
+                return interaction.reply({ content: '❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ', flags: [MessageFlags.Ephemeral] });
+
+            const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Bangkok' }));
+            const currentMM = String(now.getMonth() + 1).padStart(2, '0');
+
+            const syncs = await RobloxSync.find({ birthday: { $regex: `-${currentMM}$` } });
+
+            if (!syncs.length)
+                return interaction.reply({ content: `😕 ไม่มีใครวันเกิดเดือนนี้เลย`, flags: [MessageFlags.Ephemeral] });
+
+            // เรียงตามวัน
+            syncs.sort((a, b) => parseInt(a.birthday) - parseInt(b.birthday));
+
+            const lines = [];
+            for (const sync of syncs) {
+                const m = await interaction.guild.members.fetch(sync.discordId).catch(() => null);
+                const [dd, mm] = sync.birthday.split('-');
+                const name = m ? m.displayName : sync.lastDisplayName;
+                const isToday = dd === String(now.getDate()).padStart(2, '0');
+                const isTomorrow = dd === String(now.getDate() + 1).padStart(2, '0');
+                const tag = isToday ? ' 🎉 วันนี้!' : isTomorrow ? ' 🎂 พรุ่งนี้!' : '';
+                lines.push(`**${dd}/${mm}** — ${name}${tag}`);
+            }
+
+            const embed = new EmbedBuilder()
+                .setTitle(`🎂 วันเกิดเดือนนี้ (${syncs.length} คน)`)
+                .setDescription(lines.join('\n'))
+                .setColor(0xFEE75C)
+                .setTimestamp();
 
             return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
         }
@@ -1047,6 +1239,16 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         if (interaction.customId === 'modal_register') {
             const robloxUsername = interaction.fields.getTextInputValue('reg_roblox_username').trim();
             const nickname       = interaction.fields.getTextInputValue('reg_nickname').trim();
+            const birthdayRaw    = interaction.fields.getTextInputValue('reg_birthday').trim();
+            // validate รูปแบบ วว/ดด
+            let birthday = null;
+            if (birthdayRaw) {
+                const bdMatch = birthdayRaw.match(/^(\d{1,2})[/\-](\d{1,2})$/);
+                if (!bdMatch) return interaction.reply({ content: '❌ รูปแบบวันเกิดไม่ถูกต้อง กรุณากรอกเป็น วว/ดด เช่น 25/12', flags: [MessageFlags.Ephemeral] });
+                const dd = bdMatch[1].padStart(2, '0');
+                const mm = bdMatch[2].padStart(2, '0');
+                birthday = `${dd}-${mm}`;
+            }
 
             await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
@@ -1087,13 +1289,15 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
             await RobloxSync.findOneAndUpdate(
                 { discordId: interaction.user.id },
-                { guildId: interaction.guild.id, discordId: interaction.user.id, robloxId, robloxUsername, lastDisplayName: displayName },
+                { guildId: interaction.guild.id, discordId: interaction.user.id, robloxId, robloxUsername, lastDisplayName: displayName, ...(birthday !== null && { birthday }) },
                 { upsert: true }
             );
 
             const finalName  = `${displayName} (${nickname})`;
             const oldName2   = interaction.member.displayName;
-            await interaction.member.setNickname(finalName).catch(() => {});
+            await interaction.member.setNickname(finalName).catch((err) => {
+                console.error(`[REGISTER] setNickname ไม่ได้ (${interaction.user.id}): ${err.message}`);
+            });
             await interaction.member.roles.add(MEMBER_ROLE_ID).catch(() => {});
             await sendRenameLog(interaction.guild, oldName2, finalName, '📝 ลงทะเบียนสมาชิกใหม่');
 
@@ -1551,6 +1755,14 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                         .setPlaceholder('เช่น แคนดี้')
                         .setStyle(TextInputStyle.Short)
                         .setRequired(true)
+                ),
+                new ActionRowBuilder().addComponents(
+                    new TextInputBuilder()
+                        .setCustomId('reg_birthday')
+                        .setLabel('วันเกิด (วว/ดด)')
+                        .setPlaceholder('เช่น 25/12')
+                        .setStyle(TextInputStyle.Short)
+                        .setRequired(false)
                 ),
             );
             return interaction.showModal(modal);
