@@ -405,7 +405,9 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
                         // เปลี่ยนถ้า: Roblox displayName เปลี่ยน หรือ Discord nickname ยังไม่ตรง
                         const nameChanged   = data.displayName !== sync.lastDisplayName;
-                        const nicknameWrong = member.displayName !== finalName;
+                        // เช็คจาก lastDisplayName ใน DB เทียบกับ finalName แทน member.displayName (cache อาจเก่า)
+                        const lastFinalName = sync.lastDisplayName ? `${sync.lastDisplayName} (${bracketSuffix})` : null;
+                        const nicknameWrong = lastFinalName !== finalName;
                         console.log(`[SYNC] Discord nickname ปัจจุบัน: "${member.displayName}" | ควรเป็น: "${finalName}"`);
                         console.log(`[SYNC] nameChanged=${nameChanged} | nicknameWrong=${nicknameWrong}`);
                         if (!nameChanged && !nicknameWrong) {
