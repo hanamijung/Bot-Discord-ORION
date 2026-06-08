@@ -386,8 +386,9 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                             continue;
                         }
 
-                        const guild  = client.guilds.cache.first();
+                        const guild  = client.guilds.cache.get(process.env.GUILD_ID) || client.guilds.cache.first();
                         if (!guild) { console.log(`[SYNC] ⚠️ หา guild ไม่เจอ`); continue; }
+                        console.log(`[SYNC] ใช้ guild: ${guild.name} (${guild.id})`);
                         const member = await guild.members.fetch(sync.discordId).catch(() => null);
                         if (!member) { console.log(`[SYNC] ⚠️ หา member ไม่เจอ (${sync.discordId})`); continue; }
 
