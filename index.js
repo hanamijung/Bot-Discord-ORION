@@ -25,6 +25,7 @@ const express  = require('express');
 // ════════════════════════════════════════════════════════
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const MONGO_URI = process.env.MONGOTOKEN;
+let mainGuildId  = null; // เก็บ Guild ID หลักตอนบอทเปิด
 const MEMBER_ROLE_ID         = '1472776595554042049';
 const RENAME_LOG_CHANNEL_ID  = '1507318365864071178'; // channel สำหรับ log การเปลี่ยนชื่อ
 
@@ -113,6 +114,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
     // ─── Schema: Roblox-Discord Sync ─────────────────────────
     const RobloxSync = mongoose.model('RobloxSync', new mongoose.Schema({
+        guildId:         { type: String, default: null },
         discordId:       { type: String, unique: true },
         robloxId:        String,
         robloxUsername:  String,
@@ -344,6 +346,8 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             console.log(`ชื่อเซิร์ฟเวอร์: ${guild.name} | ID: ${guild.id}`);
         });
         console.log('----------------------------');
+        mainGuildId = process.env.GUILD_ID || client.guilds.cache.first()?.id ?? null;
+        console.log(`🏠 Guild หลัก: ${mainGuildId}`);
 
         try {
             if (!MONGO_URI) throw new Error('ไม่เจอตัวแปร MONGOTOKEN');
@@ -375,6 +379,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                     try {
                         console.log(`[SYNC] กำลังเช็ค discordId: ${sync.discordId} | robloxId: ${sync.robloxId}`);
                         const res  = await fetch(`https://users.roblox.com/v1/users/${sync.robloxId}`);
+                        await new Promise(r => setTimeout(r, 500));
                         const data = await res.json();
                         if (!data || !data.displayName) {
                             console.log(`[SYNC] ⚠️ ดึงข้อมูล Roblox ไม่ได้ (${sync.robloxId})`);
@@ -386,8 +391,9 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                             continue;
                         }
 
-                        const guild  = client.guilds.cache.get(process.env.GUILD_ID) || client.guilds.cache.first();
-                        if (!guild) { console.log(`[SYNC] ⚠️ หา guild ไม่เจอ`); continue; }
+                        const targetGuildId = sync.guildId || mainGuildId;
+                        const guild  = client.guilds.cache.get(targetGuildId);
+                        if (!guild) { console.log(`[SYNC] ⚠️ หา guild ไม่เจอ (guildId=${targetGuildId})`); continue; }
                         console.log(`[SYNC] ใช้ guild: ${guild.name} (${guild.id})`);
                         const member = await guild.members.fetch(sync.discordId).catch(() => null);
                         if (!member) { console.log(`[SYNC] ⚠️ หา member ไม่เจอ (${sync.discordId})`); continue; }
@@ -600,7 +606,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
             await RobloxSync.findOneAndUpdate(
                 { discordId: targetMember.id },
-                { discordId: targetMember.id, robloxId, robloxUsername, lastDisplayName: displayName },
+                { guildId: interaction.guild.id, discordId: targetMember.id, robloxId, robloxUsername, lastDisplayName: displayName },
                 { upsert: true }
             );
 
@@ -1078,7 +1084,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
             await RobloxSync.findOneAndUpdate(
                 { discordId: interaction.user.id },
-                { discordId: interaction.user.id, robloxId, robloxUsername, lastDisplayName: displayName },
+                { guildId: interaction.guild.id, discordId: interaction.user.id, robloxId, robloxUsername, lastDisplayName: displayName },
                 { upsert: true }
             );
 
