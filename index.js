@@ -1028,8 +1028,13 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
         // ── 📖 ประวัติของฉัน ───────────────────────────────
         if (customId === 'main_history_btn') {
+            // รองรับทั้ง userId ตรงๆ และรูปแบบเก่า <@userId>
             const history = await History.findOne({
-                userId: user.id
+                $or: [
+                    { userId: user.id },
+                    { userId: `<@${user.id}>` },
+                    { userId: `<@!${user.id}>` },
+                ]
             });
             if (!history?.records.length)
                 return safeReply(interaction, E('📭 ยังไม่มีประวัติการเข้าร่วมเลยนะ ลองมาร่วมกิจกรรมดูสิ!'));
