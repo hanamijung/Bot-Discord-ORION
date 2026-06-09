@@ -55,6 +55,7 @@ const protectedChannels = new Set();
 const client = new Client( {
     intents: [
         GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
     ],
@@ -65,6 +66,7 @@ const client = new Client( {
 // ════════════════════════════════════════════════════════
 const cooldownMap = new Map();
 const robloxListCache = new Map(); // cache สำหรับ /robloxlist pagination
+const robloxListTimers = new Map(); // timer สำหรับ expire cache
 
 function checkCooldown(userId, eventId) {
     const key = `${userId}:${eventId}`;
@@ -748,7 +750,8 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             // เก็บ pages ใน cache แทนการยัดใน customId (กัน error customId เกิน 100 ตัวอักษร)
             const cacheKey = `${interaction.user.id}_${Date.now()}`;
             robloxListCache.set(cacheKey, { pages, total: allSyncs.length });
-            setTimeout(() => robloxListCache.delete(cacheKey), 10 * 60_000); // expire 10 นาที
+            if (robloxListTimers.has(cacheKey)) clearTimeout(robloxListTimers.get(cacheKey));
+            robloxListTimers.set(cacheKey, setTimeout(() => { robloxListCache.delete(cacheKey); robloxListTimers.delete(cacheKey); }, 10 * 60_000));
 
             const components = [];
             if (pages.length > 1) {
@@ -1916,7 +1919,8 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         if (!cached) {
             const fresh = await getRobloxPages(interaction.guild);
             robloxListCache.set(cacheKey, fresh);
-            setTimeout(() => robloxListCache.delete(cacheKey), 10 * 60_000);
+            if (robloxListTimers.has(cacheKey)) clearTimeout(robloxListTimers.get(cacheKey));
+            robloxListTimers.set(cacheKey, setTimeout(() => { robloxListCache.delete(cacheKey); robloxListTimers.delete(cacheKey); }, 10 * 60_000));
             cached = fresh;
         }
 
