@@ -21,6 +21,16 @@ const mongoose = require('mongoose');
 const express  = require('express');
 
 // ════════════════════════════════════════════════════════
+//  GLOBAL ERROR HANDLERS
+// ════════════════════════════════════════════════════════
+process.on('unhandledRejection', (err) => {
+    console.error('[UNHANDLED REJECTION]', err?.message || err);
+});
+process.on('uncaughtException', (err) => {
+    console.error('[UNCAUGHT EXCEPTION]', err?.message || err);
+});
+
+// ════════════════════════════════════════════════════════
 //  CONFIG
 // ════════════════════════════════════════════════════════
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -355,7 +365,19 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
         try {
             if (!MONGO_URI) throw new Error('ไม่เจอตัวแปร MONGOTOKEN');
-            await mongoose.connect(MONGO_URI);
+            await mongoose.connect(MONGO_URI, {
+                serverSelectionTimeoutMS: 5000,
+                socketTimeoutMS: 45000,
+            });
+            mongoose.connection.on('disconnected', () => {
+                console.warn('⚠️ MongoDB หลุด กำลัง reconnect...');
+            });
+            mongoose.connection.on('reconnected', () => {
+                console.log('✅ MongoDB reconnect สำเร็จ');
+            });
+            mongoose.connection.on('error', (err) => {
+                console.error('❌ MongoDB error:', err.message);
+            });
             console.log('🍃 ต่อ MongoDB สำเร็จ!');
         } catch (err) {
             console.error('❌ ต่อ MongoDB ไม่ได้:', err.message);
