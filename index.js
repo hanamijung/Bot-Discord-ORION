@@ -285,16 +285,32 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         const totalPages = Math.ceil(allPeople.length / PAGE_SIZE);
         const pagePeople = allPeople.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
+        // ดึง member จาก guild เพื่อเอาชื่อจริง
+        const guild = interaction.guild;
+        const memberMap = new Map();
+        try {
+            const ids = pagePeople.map(p => stripMention(p.userTag)).filter(id => /^\d{17,20}$/.test(id));
+            await Promise.all(ids.map(id =>
+                guild.members.fetch(id).then(m => memberMap.set(id, m)).catch(() => {})
+            ));
+        } catch { /* ใช้ ID เป็น fallback */ }
+
+        const getLabel = (userTag) => {
+            const id = stripMention(userTag);
+            const m  = memberMap.get(id);
+            return m ? m.displayName.substring(0, 25) : id.substring(0, 25);
+        };
+
         const options = pagePeople.map(({ userTag, type }) => ({
-            label:       (attended.includes(userTag) ? '✅ ' : '') + stripMention(userTag).substring(0, 20),
+            label:       (attended.includes(userTag) ? '✅ ' : '') + getLabel(userTag),
             description: `${typeLabel[type]}  •  ${attended.includes(userTag) ? 'เช็คแล้ว' : 'ยังไม่ได้เช็ค'}`,
             value:       `${event.eventId}||${userTag}`.substring(0, 100),
-    }));
+        }));
 
         const checkedOptions = pagePeople
             .filter(({ userTag }) => attended.includes(userTag))
             .map(({ userTag, type }) => ({
-                label:       '✅ ' + stripMention(userTag).substring(0, 20),
+                label:       '✅ ' + getLabel(userTag),
                 description: `${typeLabel[type]}  •  เช็คแล้ว`,
                 value:       `${event.eventId}||${userTag}`.substring(0, 100),
             }));
@@ -518,11 +534,19 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         new SlashCommandBuilder()
             .setName('birthdays')
             .setDescription('ดูวันเกิดที่กำลังจะมาถึงในเดือนนี้'),
+        new SlashCommandBuilder()
+            .setName('setbirthday')
+            .setDescription('ตั้งหรือแก้ไขวันเกิดของตัวเอง')
+            .addStringOption(o => o.setName('birthday').setDescription('วันเกิด เช่น 25/12').setRequired(true)),
+        new SlashCommandBuilder()
+            .setName('forcesyncroblox')
+            .setDescription('บังคับ sync Roblox ของสมาชิกทันที')
+            .addUserOption(o => o.setName('user').setDescription('สมาชิกที่ต้องการ sync').setRequired(true)),
     ].map(c => c.toJSON());
 
 
         // ── Birthday Check — เช็คทุกวัน 00:00 น. เวลาไทย ──────
-        const BIRTHDAY_CHANNEL_ID = '1513618012006125688';
+        const BIRTHDAY_CHANNEL_ID = '1513821672371781703';
         const checkBirthday = async () => {
             try {
                 const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Bangkok' }));
@@ -924,6 +948,72 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                 .setTimestamp();
 
             return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
+        }
+
+
+        // /setbirthday
+        if (commandName === 'setbirthday') {
+            const sync = await RobloxSync.findOne({ discordId: interaction.user.id });
+            if (!sync)
+                return interaction.reply({ content: '😕 คุณยังไม่ได้ลงทะเบียนเลย กดปุ่มลงทะเบียนก่อนนะ', flags: [MessageFlags.Ephemeral] });
+
+            const birthdayRaw = interaction.options.getString('birthday').trim();
+            const bdMatch = birthdayRaw.match(/^(\d{1,2})[/\-](\d{1,2})$/);
+            if (!bdMatch)
+                return interaction.reply({ content: '❌ รูปแบบวันเกิดไม่ถูกต้อง กรุณากรอกเป็น วว/ดด เช่น 25/12', flags: [MessageFlags.Ephemeral] });
+
+            const dd = bdMatch[1].padStart(2, '0');
+            const mm = bdMatch[2].padStart(2, '0');
+            const birthday = `${dd}-${mm}`;
+
+            await RobloxSync.findOneAndUpdate({ discordId: interaction.user.id }, { birthday });
+            return interaction.reply({ content: `✅ บันทึกวันเกิด **${dd}/${mm}** เรียบร้อยแล้ว`, flags: [MessageFlags.Ephemeral] });
+        }
+
+        // /forcesyncroblox
+        if (commandName === 'forcesyncroblox') {
+            if (!hasPermission(member))
+                return interaction.reply({ content: '❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ', flags: [MessageFlags.Ephemeral] });
+
+            await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
+            const targetUser   = interaction.options.getUser('user');
+            const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
+            if (!targetMember)
+                return interaction.editReply('❌ หาสมาชิกคนนี้ไม่เจอในเซิร์ฟเวอร์');
+
+            const sync = await RobloxSync.findOne({ discordId: targetUser.id });
+            if (!sync)
+                return interaction.editReply(`❌ ${targetMember.displayName} ยังไม่ได้ลงทะเบียนเลย`);
+
+            try {
+                const res  = await fetch(`https://users.roblox.com/v1/users/${sync.robloxId}`);
+                const data = await res.json();
+                if (!data || !data.displayName)
+                    return interaction.editReply('❌ ดึงข้อมูล Roblox ไม่ได้ ลองใหม่ภายหลังนะ');
+
+                if (!data.displayName.toUpperCase().startsWith('ORION'))
+                    return interaction.editReply(`❌ Display Name บน Roblox ไม่ขึ้นต้นด้วย ORION: **${data.displayName}**`);
+
+                const currentName   = targetMember.displayName;
+                const bracketMatch  = currentName.match(/[(](.+)[)]$/);
+                const bracketSuffix = bracketMatch ? bracketMatch[1] : currentName;
+                const finalName     = `${data.displayName} (${bracketSuffix})`;
+
+                await targetMember.setNickname(finalName).catch((err) => {
+                    console.error(`[FORCESYNC] setNickname ไม่ได้ (${targetUser.id}): ${err.message}`);
+                });
+
+                sync.lastDisplayName = data.displayName;
+                await sync.save();
+
+                console.log(`[FORCESYNC] ${targetUser.id} → ${finalName}`);
+                await sendRenameLog(interaction.guild, currentName, finalName, '🔄 Force Sync โดยแอดมิน');
+                return interaction.editReply(`✅ Sync สำเร็จ! เปลี่ยนชื่อ **${currentName}** → **${finalName}** แล้ว`);
+            } catch (err) {
+                console.error(`[FORCESYNC] error: ${err.message}`);
+                return interaction.editReply(`❌ เกิดข้อผิดพลาด: ${err.message}`);
+            }
         }
 
         // /setup-register
