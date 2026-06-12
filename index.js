@@ -550,14 +550,18 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         const checkBirthday = async () => {
             try {
                 const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Bangkok' }));
+
+                // วันนี้
+                const todayDD = String(now.getDate()).padStart(2, '0');
+                const todayMM = String(now.getMonth() + 1).padStart(2, '0');
+                const todayStr = `${todayDD}-${todayMM}`;
+
+                // พรุ่งนี้
                 const tomorrow = new Date(now);
                 tomorrow.setDate(tomorrow.getDate() + 1);
                 const tomorrowDD = String(tomorrow.getDate()).padStart(2, '0');
                 const tomorrowMM = String(tomorrow.getMonth() + 1).padStart(2, '0');
                 const tomorrowStr = `${tomorrowDD}-${tomorrowMM}`;
-
-                const syncs = await RobloxSync.find({ birthday: tomorrowStr });
-                if (!syncs.length) return;
 
                 const guild = client.guilds.cache.get(mainGuildId);
                 if (!guild) return;
@@ -565,12 +569,24 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                 const channel = guild.channels.cache.get(BIRTHDAY_CHANNEL_ID);
                 if (!channel) return;
 
-                for (const sync of syncs) {
+                // 🎉 แจ้งวันเกิดวันนี้
+                const todaySyncs = await RobloxSync.find({ birthday: todayStr });
+                for (const sync of todaySyncs) {
+                    const member = await guild.members.fetch(sync.discordId).catch(() => null);
+                    if (!member) continue;
+                    await channel.send(`🎉🎂 วันนี้วันเกิด ${member} เลยน้าาา ~ `);
+                }
+
+                // 🔔 แจ้งล่วงหน้า 1 วัน
+                const tomorrowSyncs = await RobloxSync.find({ birthday: tomorrowStr });
+                for (const sync of tomorrowSyncs) {
                     const member = await guild.members.fetch(sync.discordId).catch(() => null);
                     if (!member) continue;
                     await channel.send(`🎂 พรุ่งนี้วันเกิด ${member} แล้วนะ!`);
                 }
-                console.log(`[BIRTHDAY] เช็ควันเกิดเสร็จ พบ ${syncs.length} คน`);
+
+                const total = todaySyncs.length + tomorrowSyncs.length;
+                if (total) console.log(`[BIRTHDAY] เช็ควันเกิดเสร็จ — วันนี้ ${todaySyncs.length} คน, พรุ่งนี้ ${tomorrowSyncs.length} คน`);
             } catch (err) {
                 console.error(`[BIRTHDAY] error: ${err.message}`);
             }
