@@ -574,7 +574,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                 for (const sync of todaySyncs) {
                     const member = await guild.members.fetch(sync.discordId).catch(() => null);
                     if (!member) continue;
-                    await channel.send(`🎉🎂 วันนี้วันเกิด ${member} เลยน้าาา ~ `);
+                    await channel.send(`🎂 วันนี้วันเกิด ${member} แล้วน้าาา ~`);
                 }
 
                 // 🔔 แจ้งล่วงหน้า 1 วัน
