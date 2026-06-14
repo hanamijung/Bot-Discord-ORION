@@ -675,7 +675,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
             const embed = new EmbedBuilder()
                 .setTitle('📅 ระบบจัดการกิจกรรม')
-                .setDescription('อยากจัดการหรืออยากลงชื่อเข้าร่วมก็กดได้เลย 👇')
+                .setDescription('อยากจัดการหรืออยากลงชื่อเข้าร่วมก็กดได้เลย 👇\n\n🛠️ หากระบบมีปัญหาติดต่อผู้พัฒนา: <@360498353462575115>')
                 .setFooter({ text: `📅 อัปเดตล่าสุด: ${new Date().toLocaleDateString('th-TH')}` })
                 .setColor(0x5865F2);
 
@@ -1044,7 +1044,8 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                     '**สิ่งที่ต้องเตรียม:**\n' +
                     '🎮 Roblox Username ของคุณ\n' +
                     '🏷️ ชื่อเล่นที่อยากใช้\n\n' +
-                    '⚠️ Display Name ใน Roblox ต้องขึ้นต้นด้วย **ORION** นะ'
+                    '⚠️ Display Name ใน Roblox ต้องขึ้นต้นด้วย **ORION** นะ\n\n' +
+                    '🛠️ หากระบบมีปัญหาติดต่อผู้พัฒนา: <@360498353462575115>'
                 )
 .setImage('https://img1.pic.in.th/images/1000040601.jpg')
                 .setColor(0x5865F2)
