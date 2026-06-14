@@ -1042,8 +1042,8 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                 .setDescription(
                     'กดปุ่มด้านล่างเพื่อลงทะเบียนเข้าร่วมคลับ\n\n' +
                     '**สิ่งที่ต้องเตรียม:**\n' +
-                    '🎮 Roblox Username ของคุณ\n' +
-                    '🏷️ ชื่อเล่นที่อยากใช้\n\n' +
+                    '🎮 Roblox Username\n' +
+                    '🏷️ ชื่อเล่น\n\n' +
                     '⚠️ Display Name ใน Roblox ต้องขึ้นต้นด้วย **ORION** นะ\n\n' +
                     '🛠️ หากระบบมีปัญหาติดต่อผู้พัฒนา: <@360498353462575115>'
                 )
