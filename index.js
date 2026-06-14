@@ -1881,7 +1881,6 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                     new TextInputBuilder()
                         .setCustomId('reg_roblox_username')
                         .setLabel('Roblox Username')
-                        .setPlaceholder('เช่น ORIONxIT_Candybibi')
                         .setStyle(TextInputStyle.Short)
                         .setRequired(true)
                 ),
@@ -1889,7 +1888,6 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                     new TextInputBuilder()
                         .setCustomId('reg_nickname')
                         .setLabel('ชื่อเล่น')
-                        .setPlaceholder('เช่น แคนดี้')
                         .setStyle(TextInputStyle.Short)
                         .setRequired(true)
                 ),
