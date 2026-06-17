@@ -457,11 +457,10 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                         const bracketSuffix = bracketMatch ? bracketMatch[1] : currentName;
                         const finalName     = `${data.displayName} (${bracketSuffix})`;
 
-                        // เปลี่ยนถ้า: Roblox displayName เปลี่ยน หรือ Discord nickname ยังไม่ตรง
+                        // เปลี่ยนถ้า: Roblox displayName เปลี่ยน หรือ Discord nickname ปัจจุบันไม่ตรงกับที่ควรเป็น
                         const nameChanged   = data.displayName !== sync.lastDisplayName;
-                        // เช็คจาก lastDisplayName ใน DB เทียบกับ finalName แทน member.displayName (cache อาจเก่า)
-                        const lastFinalName = sync.lastDisplayName ? `${sync.lastDisplayName} (${bracketSuffix})` : null;
-                        const nicknameWrong = lastFinalName !== finalName;
+                        // เทียบจากชื่อ Discord ปัจจุบันจริงๆ (member.displayName) แทนการเทียบจาก DB เพื่อจับกรณีถูกแก้ชื่อมือ
+                        const nicknameWrong = member.displayName !== finalName;
                         console.log(`[SYNC] Discord nickname ปัจจุบัน: "${member.displayName}" | ควรเป็น: "${finalName}"`);
                         console.log(`[SYNC] nameChanged=${nameChanged} | nicknameWrong=${nicknameWrong}`);
                         if (!nameChanged && !nicknameWrong) {
