@@ -469,8 +469,8 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                         console.error(`[ERROR] sync ล้มเหลว (${sync.discordId}): ${err.message}`);
                     }
 
-                    // delay 500ms ต่อคน กันโดน rate limit
-                    await new Promise(r => setTimeout(r, 500));
+                    // delay 1500ms ต่อคน กันโดน rate limit
+                    await new Promise(r => setTimeout(r, 1500));
                 }
             } catch (err) {
                 console.error(`[ERROR] sync DB ล้มเหลว: ${err.message}`);
