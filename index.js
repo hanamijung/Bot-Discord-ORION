@@ -411,20 +411,32 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             console.error('❌ Register Slash Commands ไม่ได้:', err.message);
         }
 
-        // Roblox Sync — เช็ค Display Name ทุก 5 นาที
+        // Roblox Sync — เช็ค Display Name ทุก 10 นาที แบ่ง batch 10 คน/รอบ
+        let syncBatchIndex = 0;
         setInterval(async () => {
             console.log(`[SYNC] เริ่ม sync รอบใหม่ — ${new Date().toLocaleTimeString('th-TH', { timeZone: 'Asia/Bangkok' })}`);
             try {
                 const syncs = await RobloxSync.find({});
-                console.log(`[SYNC] พบ ${syncs.length} คนที่ลงทะเบียนไว้`);
-                for (const sync of syncs) {
+                const BATCH_SIZE = 10;
+                const totalBatches = Math.ceil(syncs.length / BATCH_SIZE);
+
+                // หมุน batch index วนซ้ำ
+                if (syncBatchIndex >= totalBatches) syncBatchIndex = 0;
+
+                const batchStart = syncBatchIndex * BATCH_SIZE;
+                const batch = syncs.slice(batchStart, batchStart + BATCH_SIZE);
+
+                console.log(`[SYNC] พบ ${syncs.length} คน | batch ${syncBatchIndex + 1}/${totalBatches} (คนที่ ${batchStart + 1}-${batchStart + batch.length})`);
+                syncBatchIndex++;
+
+                for (const sync of batch) {
                     try {
                         console.log(`[SYNC] กำลังเช็ค discordId: ${sync.discordId} | robloxId: ${sync.robloxId}`);
                         const res  = await fetch(`https://users.roblox.com/v1/users/${sync.robloxId}`);
                         await new Promise(r => setTimeout(r, 500));
                         const data = await res.json();
                         if (!data || !data.displayName) {
-                            console.log(`[SYNC] ⚠️ ดึงข้อมูล Roblox ไม่ได้ (${sync.robloxId})`);
+                            console.log(`[SYNC] ⚠️ ดึงข้อมูล Roblox ไม่ได้ (${sync.robloxId}) | HTTP: ${res.status} | response: ${JSON.stringify(data)}`);
                             continue;
                         }
                         console.log(`[SYNC] Roblox displayName: "${data.displayName}" | DB lastDisplayName: "${sync.lastDisplayName}"`);
@@ -476,7 +488,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                 console.error(`[ERROR] sync DB ล้มเหลว: ${err.message}`);
             }
             console.log(`[SYNC] จบรอบ sync — ${new Date().toLocaleTimeString('th-TH', { timeZone: 'Asia/Bangkok' })}`);
-        }, 5 * 60_000);
+        }, 10 * 60_000);
 
         // ปิดกิจกรรมที่หมดเวลาอัตโนมัติทุก 1 นาที
         setInterval(async () => {
