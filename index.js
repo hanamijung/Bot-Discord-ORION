@@ -134,6 +134,20 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         birthday:        { type: String, default: null }, // รูปแบบ DD-MM
     }));
 
+    // ─── Schema: Multi-Group Tracker ─────────────────────────
+    // ติดตามสถานะการเข้ากลุ่ม Roblox ของผู้เล่นที่ลงทะเบียนไว้แล้ว (RobloxSync)
+    const GroupTracker = mongoose.model('GroupTracker', new mongoose.Schema({
+        discordId: { type: String, required: true, unique: true },
+        robloxId:  { type: String, required: true },
+        groups: [{
+            groupId:   { type: String, required: true },
+            groupName: { type: String, default: null },
+            status:    { type: String, enum: ['pending', 'joined'], default: 'pending' },
+            joinedAt:  { type: Date, default: null },
+            addedAt:   { type: Date, default: Date.now },
+        }],
+    }));
+
     // ════════════════════════════════════════════════════════
     //  HELPERS
     // ════════════════════════════════════════════════════════
@@ -489,6 +503,57 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             console.log(`[SYNC] จบรอบ sync — ${new Date().toLocaleTimeString('th-TH', { timeZone: 'Asia/Bangkok' })}`);
         }, 10 * 60_000);
 
+        // ── Multi-Group Tracker — เช็คสถานะเข้ากลุ่ม Roblox ทุก 10 นาที ──
+        // เช็คเฉพาะ pending entry เท่านั้น (ไม่ยุ่งกับกลุ่มที่ joined แล้ว) ป้องกัน rate limit ด้วย delay ต่อรายการ
+        const checkGroupStatus = async () => {
+            console.log(`[GROUPTRACK] เริ่มเช็คกลุ่ม — ${new Date().toLocaleTimeString('th-TH', { timeZone: 'Asia/Bangkok' })}`);
+            try {
+                // ดึงเฉพาะ tracker ที่มี group สถานะ pending อยู่อย่างน้อย 1 กลุ่ม
+                const trackers = await GroupTracker.find({ 'groups.status': 'pending' });
+                console.log(`[GROUPTRACK] พบ ${trackers.length} คนที่มีกลุ่ม pending อยู่`);
+
+                for (const tracker of trackers) {
+                    const pendingGroups = tracker.groups.filter(g => g.status === 'pending');
+
+                    for (const g of pendingGroups) {
+                        try {
+                            const res  = await fetch(`https://users.roblox.com/v1/users/${tracker.robloxId}/groups/roles`);
+                            if (!res.ok) {
+                                console.log(`[GROUPTRACK] ⚠️ ดึงข้อมูลกลุ่มไม่ได้ (robloxId=${tracker.robloxId}) | HTTP: ${res.status}`);
+                            } else {
+                                const data = await res.json();
+                                const isMember = Array.isArray(data?.data) && data.data.some(entry => String(entry.group?.id) === g.groupId);
+
+                                if (isMember) {
+                                    g.status   = 'joined';
+                                    g.joinedAt = new Date();
+                                    console.log(`[GROUPTRACK] ✅ ${tracker.discordId} (robloxId=${tracker.robloxId}) เข้ากลุ่ม ${g.groupId} แล้ว`);
+                                } else {
+                                    console.log(`[GROUPTRACK] ⏳ ${tracker.discordId} (robloxId=${tracker.robloxId}) ยังไม่เข้ากลุ่ม ${g.groupId}`);
+                                }
+                            }
+                        } catch (err) {
+                            console.error(`[GROUPTRACK] error เช็คกลุ่ม ${g.groupId} ของ ${tracker.discordId}: ${err.message}`);
+                        }
+
+                        // delay กันโดน rate limit ของ Roblox Groups API
+                        await new Promise(r => setTimeout(r, 1500));
+                    }
+
+                    // save แยก try/catch ของตัวเอง — ถ้า save ล้มเหลวไม่ให้กระทบ tracker คนถัดไปใน loop
+                    try {
+                        await tracker.save();
+                    } catch (err) {
+                        console.error(`[GROUPTRACK] บันทึก DB ไม่ได้ (${tracker.discordId}): ${err.message}`);
+                    }
+                }
+            } catch (err) {
+                console.error(`[GROUPTRACK] error: ${err.message}`);
+            }
+            console.log(`[GROUPTRACK] จบรอบเช็คกลุ่ม — ${new Date().toLocaleTimeString('th-TH', { timeZone: 'Asia/Bangkok' })}`);
+        };
+        setInterval(checkGroupStatus, 10 * 60_000);
+
         // ปิดกิจกรรมที่หมดเวลาอัตโนมัติทุก 1 นาที
         setInterval(async () => {
             const expired = await Event.find({
@@ -553,6 +618,17 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             .setName('forcesyncroblox')
             .setDescription('บังคับ sync Roblox ของสมาชิกทันที')
             .addUserOption(o => o.setName('user').setDescription('สมาชิกที่ต้องการ sync').setRequired(true)),
+        new SlashCommandBuilder()
+            .setName('trackgroup')
+            .setDescription('เพิ่มกลุ่ม Roblox ที่ต้องการติดตามสถานะการเข้าร่วม')
+            .addStringOption(o => o.setName('groupid').setDescription('Group ID ของกลุ่ม Roblox ที่ต้องการติดตาม').setRequired(true))
+            .addStringOption(o => o.setName('groupname').setDescription('ตั้งชื่อกลุ่มเอง (ไม่ใส่ = ดึงชื่อจริงจาก Roblox อัตโนมัติ)').setRequired(false))
+            .addUserOption(o => o.setName('user').setDescription('สมาชิกที่จะติดตาม (ไม่ใส่ = ตัวเอง)').setRequired(false)),
+        new SlashCommandBuilder()
+            .setName('groupstatus')
+            .setDescription('เช็คสถานะการเข้ากลุ่ม Roblox และนับวันว่าเติมได้แล้วหรือยัง')
+            .addUserOption(o => o.setName('user').setDescription('สมาชิกที่ต้องการดู (ไม่ใส่ = ตัวเอง)').setRequired(false))
+            .addStringOption(o => o.setName('groupid').setDescription('ระบุ Group ID ถ้า track ไว้หลายกลุ่ม (ไม่ใส่ = กลุ่มแรก)').setRequired(false)),
     ].map(c => c.toJSON());
 
 
@@ -1040,6 +1116,127 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             } catch (err) {
                 console.error(`[FORCESYNC] error: ${err.message}`);
                 return interaction.editReply(`❌ เกิดข้อผิดพลาด: ${err.message}`);
+            }
+        }
+
+        // /trackgroup — เพิ่มกลุ่ม Roblox ที่ต้องการติดตามสถานะการเข้าร่วม
+        if (commandName === 'trackgroup') {
+            try {
+                const targetUser   = interaction.options.getUser('user') || interaction.user;
+                const groupId      = interaction.options.getString('groupid').trim();
+                const groupNameOpt = interaction.options.getString('groupname');
+
+                // เฉพาะแอดมิน/สตาฟเท่านั้นที่ track ให้คนอื่นได้
+                if (targetUser.id !== interaction.user.id && !hasPermission(member))
+                    return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นที่ track ให้คนอื่นได้'));
+
+                if (!/^\d+$/.test(groupId))
+                    return safeReply(interaction, E('❌ Group ID ต้องเป็นตัวเลขเท่านั้น'));
+
+                const sync = await RobloxSync.findOne({ discordId: targetUser.id });
+                if (!sync)
+                    return safeReply(interaction, E(`❌ ${targetUser.id === interaction.user.id ? 'คุณ' : 'สมาชิกคนนี้'}ยังไม่ได้ลงทะเบียน Roblox เลย ต้อง /register ก่อนถึง track กลุ่มได้`));
+
+                // ใช้ findOneAndUpdate + upsert แทน find-then-save เพื่อกัน race condition (บัค: document ซ้ำ)
+                let tracker = await GroupTracker.findOneAndUpdate(
+                    { discordId: targetUser.id },
+                    { $setOnInsert: { discordId: targetUser.id, robloxId: sync.robloxId, groups: [] } },
+                    { upsert: true, new: true }
+                );
+
+                const existing = tracker.groups.find(g => g.groupId === groupId);
+                if (existing)
+                    return safeReply(interaction, E(`⚠️ กลุ่ม \`${groupId}\` อยู่ในรายการติดตามแล้ว (สถานะ: ${existing.status === 'joined' ? '✅ เข้าร่วมแล้ว' : '⏳ รอเข้าร่วม'})`));
+
+                // ถ้าไม่ตั้งชื่อเอง ให้ดึงชื่อจริงจาก Roblox Groups API มาเก็บไว้เลย (ครั้งเดียว ไม่ต้องยิงซ้ำตอนเช็คสถานะ)
+                let groupName = groupNameOpt ? groupNameOpt.trim() : null;
+                if (!groupName) {
+                    try {
+                        const res = await fetch(`https://groups.roblox.com/v1/groups/${groupId}`);
+                        if (res.ok) {
+                            const data = await res.json();
+                            if (data?.name) groupName = data.name;
+                        } else {
+                            console.log(`[TRACKGROUP] ดึงชื่อกลุ่มไม่ได้ (groupId=${groupId}) | HTTP: ${res.status}`);
+                        }
+                    } catch (err) {
+                        console.error(`[TRACKGROUP] error ดึงชื่อกลุ่ม: ${err.message}`);
+                    }
+                }
+
+                tracker.groups.push({ groupId, groupName, status: 'pending' });
+                tracker.robloxId = sync.robloxId; // กันกรณี robloxId เปลี่ยนหลัง re-register
+                await tracker.save();
+
+                console.log(`[GROUPTRACK] เพิ่มกลุ่ม ${groupId} (${groupName || 'ไม่มีชื่อ'}) ให้ ${targetUser.id} (robloxId: ${sync.robloxId})`);
+                return safeReply(interaction, E(`✅ เพิ่มกลุ่ม **${groupName || groupId}** (\`${groupId}\`) เข้ารายการติดตามแล้ว บอทจะเช็คสถานะการเข้าร่วมให้อัตโนมัติ`));
+            } catch (err) {
+                console.error(`[TRACKGROUP] error: ${err.message}`);
+                return safeReply(interaction, E('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ'));
+            }
+        }
+
+        // /groupstatus — เช็คสถานะเข้ากลุ่ม + นับวันว่าครบ 15 วัน (เติมได้แล้ว) หรือยัง
+        if (commandName === 'groupstatus') {
+            try {
+                const targetUser = interaction.options.getUser('user') || interaction.user;
+                const groupIdOpt = interaction.options.getString('groupid');
+
+                if (targetUser.id !== interaction.user.id && !hasPermission(member))
+                    return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นที่ดูของคนอื่นได้'));
+
+                const sync = await RobloxSync.findOne({ discordId: targetUser.id });
+                if (!sync)
+                    return safeReply(interaction, E(`❌ ${targetUser.id === interaction.user.id ? 'คุณ' : 'สมาชิกคนนี้'}ยังไม่ได้ลงทะเบียน Roblox เลย`));
+
+                const tracker = await GroupTracker.findOne({ discordId: targetUser.id });
+                if (!tracker || tracker.groups.length === 0)
+                    return safeReply(interaction, E(`❌ ${targetUser.id === interaction.user.id ? 'คุณ' : 'สมาชิกคนนี้'}ยังไม่ได้ track กลุ่มไหนเลย ใช้ /trackgroup ก่อนนะ`));
+
+                // ถ้าระบุ groupid มา ให้แสดงแค่กลุ่มนั้น ไม่งั้นแสดงทุกกลุ่มที่ track ไว้
+                const groupsToShow = groupIdOpt
+                    ? tracker.groups.filter(x => x.groupId === groupIdOpt)
+                    : tracker.groups;
+
+                if (groupsToShow.length === 0)
+                    return safeReply(interaction, E(`❌ ไม่พบกลุ่ม \`${groupIdOpt}\` ในรายการติดตาม`));
+
+                const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
+                const displayName  = targetMember ? targetMember.displayName : (sync.lastDisplayName || sync.robloxUsername || targetUser.username);
+
+                const COOLDOWN_DAYS = 15;
+                const buildStatus = (g) => {
+                    if (g.status !== 'joined' || !g.joinedAt) return { text: '⏳ ยังไม่เข้ากลุ่ม', joined: false };
+                    const daysSinceJoin = Math.floor((Date.now() - new Date(g.joinedAt).getTime()) / (1000 * 60 * 60 * 24));
+                    if (daysSinceJoin >= COOLDOWN_DAYS) return { text: '✅ เติมได้แล้ว', joined: true };
+                    const daysLeft = COOLDOWN_DAYS - daysSinceJoin;
+                    return { text: `⏳ รออีก ${daysLeft} วัน (เข้ากลุ่มมาแล้ว ${daysSinceJoin} วัน)`, joined: true };
+                };
+
+                // สีโดยรวม: เขียวถ้าทุกกลุ่มเติมได้แล้ว, แดงถ้ามีกลุ่มที่ยังไม่เข้า, เหลืองถ้ากำลังรอ
+                const statuses = groupsToShow.map(g => ({ g, ...buildStatus(g) }));
+                let color = 0x57F287;
+                if (statuses.some(s => !s.joined)) color = 0xED4245;
+                else if (statuses.some(s => !s.text.startsWith('✅'))) color = 0xFEE75C;
+
+                const embed = new EmbedBuilder()
+                    .setTitle('📊 สถานะกลุ่ม Roblox')
+                    .setDescription(
+                        `👤 **ชื่อผู้ใช้:** ${displayName} (${sync.robloxUsername || sync.lastDisplayName})\n` +
+                        `🆔 **รหัสผู้ใช้:** \`${sync.robloxId}\``
+                    )
+                    .addFields(statuses.map(({ g, text }) => ({
+                        name: `🏷️ ${g.groupName || `Group ID: ${g.groupId}`}`,
+                        value: `📊 ${text}${g.groupName ? `\n🆔 \`${g.groupId}\`` : ''}`,
+                        inline: false,
+                    })))
+                    .setColor(color)
+                    .setFooter({ text: `ติดตามอยู่ ${tracker.groups.length} กลุ่ม • เช็คสถานะทุก 10 นาที` });
+
+                return safeReply(interaction, { embeds: [embed], flags: [MessageFlags.Ephemeral] });
+            } catch (err) {
+                console.error(`[GROUPSTATUS] error: ${err.message}`);
+                return safeReply(interaction, E('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ'));
             }
         }
 
