@@ -168,7 +168,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         const tracker = await GroupTracker.findOneAndUpdate(
             { discordId },
             { $setOnInsert: { discordId, robloxId, groups: [] } },
-            { upsert: true, new: true }
+            { upsert: true, returnDocument: 'after' }
         );
         if (tracker.groups.some(g => g.groupId === groupId)) return false; // มีอยู่แล้ว ข้าม
         tracker.groups.push({ groupId, groupName, status: 'pending', joinedAt: null });
