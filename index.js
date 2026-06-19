@@ -557,7 +557,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
                     for (const g of pendingGroups) {
                         try {
-                            const res  = await fetch(`https://users.roblox.com/v1/users/${tracker.robloxId}/groups/roles`);
+                            const res  = await fetch(`https://groups.roblox.com/v1/users/${tracker.robloxId}/groups/roles`);
                             if (!res.ok) {
                                 console.log(`[GROUPTRACK] ⚠️ ดึงข้อมูลกลุ่มไม่ได้ (robloxId=${tracker.robloxId}) | HTTP: ${res.status}`);
                             } else {
