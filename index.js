@@ -158,6 +158,17 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         addedBy:   { type: String, default: null }, // discordId ของแอดมินที่เพิ่ม
     }));
 
+    // ─── Schema: หมวดร้านเติม (Shop) — รวมหลายกลุ่มเข้าด้วยกัน ─────
+    // กลุ่มเดียวอยู่ได้หลายหมวดพร้อมกัน เช่น "SULU KAKA" อยู่ทั้ง Group A และ Group B
+    const Shop = mongoose.model('Shop', new mongoose.Schema({
+        // ไม่ใส่ unique: true เพราะ MongoDB unique index เป็น case-sensitive แต่แอปเช็คชื่อซ้ำแบบไม่สนตัวพิมพ์ใหญ่เล็ก (ดู addshop/renameshop)
+        // ถ้าใส่ unique ตรงนี้จะทำให้ "Group A" กับ "group a" ถูกมองว่าต่างกัน เปิดช่องให้สร้างซ้ำได้ผ่าน race condition
+        shopName: { type: String, required: true },
+        groupIds: { type: [String], default: [] },
+        createdAt: { type: Date, default: Date.now },
+        createdBy: { type: String, default: null },
+    }));
+
     // ════════════════════════════════════════════════════════
     //  HELPERS
     // ════════════════════════════════════════════════════════
@@ -552,10 +563,17 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                 console.log(`[GROUPTRACK] พบ ${allPending.length} คนที่มีกลุ่ม pending อยู่ | batch ${groupTrackBatchIndex + 1}/${totalBatches} (คนที่ ${batchStart + 1}-${batchStart + trackers.length})`);
                 groupTrackBatchIndex++;
 
+                // ดึง RobloxSync ของคนใน batch นี้มาเก็บไว้ล่วงหน้า เพื่อโชว์ Display Name ใน log แทน discordId ดิบๆ
+                const batchDiscordIds = trackers.map(t => t.discordId);
+                const syncDocs = await RobloxSync.find({ discordId: { $in: batchDiscordIds } });
+                const displayNameMap = new Map(syncDocs.map(s => [s.discordId, s.lastDisplayName || s.robloxUsername || s.discordId]));
+
                 for (const tracker of trackers) {
                     const pendingGroups = tracker.groups.filter(g => g.status === 'pending');
+                    const displayName = displayNameMap.get(tracker.discordId) || tracker.discordId;
 
                     for (const g of pendingGroups) {
+                        const groupLabel = g.groupName || g.groupId;
                         try {
                             const res  = await fetch(`https://groups.roblox.com/v1/users/${tracker.robloxId}/groups/roles`);
                             if (!res.ok) {
@@ -567,13 +585,13 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                                 if (isMember) {
                                     g.status   = 'joined';
                                     g.joinedAt = new Date();
-                                    console.log(`[GROUPTRACK] ✅ ${tracker.discordId} (robloxId=${tracker.robloxId}) เข้ากลุ่ม ${g.groupId} แล้ว`);
+                                    console.log(`[GROUPTRACK] ✅ ${displayName} (robloxId=${tracker.robloxId}) เข้ากลุ่ม ${groupLabel} แล้ว`);
                                 } else {
-                                    console.log(`[GROUPTRACK] ⏳ ${tracker.discordId} (robloxId=${tracker.robloxId}) ยังไม่เข้ากลุ่ม ${g.groupId}`);
+                                    console.log(`[GROUPTRACK] ⏳ ${displayName} (robloxId=${tracker.robloxId}) ยังไม่เข้ากลุ่ม ${groupLabel}`);
                                 }
                             }
                         } catch (err) {
-                            console.error(`[GROUPTRACK] error เช็คกลุ่ม ${g.groupId} ของ ${tracker.discordId}: ${err.message}`);
+                            console.error(`[GROUPTRACK] error เช็คกลุ่ม ${groupLabel} ของ ${displayName}: ${err.message}`);
                         }
 
                         // delay กันโดน rate limit ของ Roblox Groups API
@@ -664,10 +682,26 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             .addStringOption(o => o.setName('groupid').setDescription('Group ID ของกลุ่ม Roblox ที่ต้องการติดตาม').setRequired(true))
             .addStringOption(o => o.setName('groupname').setDescription('ตั้งชื่อกลุ่มเอง (ไม่ใส่ = ดึงชื่อจริงจาก Roblox อัตโนมัติ)').setRequired(false)),
         new SlashCommandBuilder()
+            .setName('addshop')
+            .setDescription('[แอดมิน] เพิ่มกลุ่ม Roblox เข้าหมวดร้านเติม (สร้างหมวดใหม่อัตโนมัติถ้ายังไม่มี)')
+            .addStringOption(o => o.setName('shopname').setDescription('ชื่อหมวดร้านเติม เช่น Group A').setRequired(true))
+            .addStringOption(o => o.setName('groupid').setDescription('เลือกกลุ่มที่ต้องการเพิ่มเข้าหมวดนี้ (ต้อง /addgroup ไว้ก่อนแล้ว)').setRequired(true).setAutocomplete(true)),
+        new SlashCommandBuilder()
+            .setName('removeshop')
+            .setDescription('[แอดมิน] ลบกลุ่มออกจากหมวดร้านเติม หรือลบทั้งหมวด')
+            .addStringOption(o => o.setName('shopname').setDescription('ชื่อหมวดร้านเติม').setRequired(true))
+            .addStringOption(o => o.setName('groupid').setDescription('เลือกกลุ่มที่จะลบ (ไม่ใส่ = ลบทั้งหมวด)').setRequired(false).setAutocomplete(true)),
+        new SlashCommandBuilder()
+            .setName('renameshop')
+            .setDescription('[แอดมิน] เปลี่ยนชื่อหมวดร้านเติม')
+            .addStringOption(o => o.setName('shopname').setDescription('ชื่อหมวดปัจจุบัน').setRequired(true))
+            .addStringOption(o => o.setName('newname').setDescription('ชื่อใหม่').setRequired(true)),
+        new SlashCommandBuilder()
             .setName('groupstatus')
             .setDescription('เช็คสถานะการเข้ากลุ่ม Roblox และนับวันว่าเติมได้แล้วหรือยัง')
             .addUserOption(o => o.setName('user').setDescription('สมาชิกที่ต้องการดู (ไม่ใส่ = ตัวเอง)').setRequired(false))
-            .addStringOption(o => o.setName('groupid').setDescription('ระบุ Group ID ถ้า track ไว้หลายกลุ่ม (ไม่ใส่ = กลุ่มแรก)').setRequired(false)),
+            .addStringOption(o => o.setName('groupid').setDescription('ระบุ Group ID ถ้า track ไว้หลายกลุ่ม (ไม่ใส่ = กลุ่มแรก)').setRequired(false))
+            .addStringOption(o => o.setName('shop').setDescription('ระบุชื่อหมวดร้านเติม เพื่อดูเฉพาะกลุ่มในหมวดนั้น').setRequired(false)),
     ].map(c => c.toJSON());
 
 
@@ -790,6 +824,44 @@ const Event = mongoose.model('Event', new mongoose.Schema({
     // ════════════════════════════════════════════════════════
     //  SLASH COMMANDS
     // ════════════════════════════════════════════════════════
+    // ── Autocomplete: groupid สำหรับ /addshop, /removeshop ──────
+    // โชว์รายการกลุ่มที่ /addgroup ไว้แล้ว (ชื่อกลุ่ม + groupId) ให้เลือกแทนพิมพ์เลขเอง
+    client.on('interactionCreate', async (interaction) => {
+        if (!interaction.isAutocomplete()) return;
+        if (!['addshop', 'removeshop'].includes(interaction.commandName)) return;
+        if (interaction.options.getFocused(true).name !== 'groupid') return;
+
+        try {
+            const typed = interaction.options.getFocused().toLowerCase();
+            let choicesSource;
+
+            if (interaction.commandName === 'addshop') {
+                // /addshop: เลือกจากกลุ่มทั้งหมดที่ track ไว้ (TrackedGroups)
+                choicesSource = await TrackedGroups.find({}).limit(100);
+            } else {
+                // /removeshop: เลือกจากกลุ่มที่อยู่ใน "หมวดนี้" เท่านั้น (ตาม shopname ที่กรอกไปแล้ว)
+                const shopNameInput = interaction.options.getString('shopname');
+                if (!shopNameInput) return interaction.respond([]);
+                const shop = await Shop.findOne({ shopName: { $regex: `^${shopNameInput.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
+                if (!shop || shop.groupIds.length === 0) return interaction.respond([]);
+                choicesSource = await TrackedGroups.find({ groupId: { $in: shop.groupIds } });
+            }
+
+            const filtered = choicesSource
+                .filter(g => !typed || g.groupId.includes(typed) || (g.groupName || '').toLowerCase().includes(typed))
+                .slice(0, 25) // Discord จำกัดสูงสุด 25 choices
+                .map(g => {
+                    const label = g.groupName ? `${g.groupName} (${g.groupId})` : g.groupId;
+                    return { name: label.slice(0, 100), value: g.groupId }; // Discord จำกัดชื่อ choice ไม่เกิน 100 ตัวอักษร
+                });
+
+            await interaction.respond(filtered);
+        } catch (err) {
+            console.error(`[AUTOCOMPLETE] error: ${err.message}`);
+            try { await interaction.respond([]); } catch {}
+        }
+    });
+
     client.on('interactionCreate', async (interaction) => {
         if (!interaction.isChatInputCommand()) return;
         const { commandName, member, channel, guild } = interaction;
@@ -1215,11 +1287,129 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             }
         }
 
+        // /addshop — [แอดมิน] เพิ่มกลุ่มเข้าหมวดร้านเติม (สร้างหมวดใหม่อัตโนมัติถ้ายังไม่มี)
+        if (commandName === 'addshop') {
+            if (!hasPermission(member))
+                return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ'));
+
+            try {
+                const shopNameInput = interaction.options.getString('shopname').trim();
+                const groupId       = interaction.options.getString('groupid').trim();
+
+                if (!/^\d+$/.test(groupId))
+                    return safeReply(interaction, E('❌ Group ID ต้องเป็นตัวเลขเท่านั้น'));
+
+                // ต้อง /addgroup ไว้ก่อนแล้วเท่านั้น กันพิมพ์ groupId ผิดหรือกลุ่มที่ไม่ได้ track
+                const trackedGroup = await TrackedGroups.findOne({ groupId });
+                if (!trackedGroup)
+                    return safeReply(interaction, E(`❌ กลุ่ม \`${groupId}\` ยังไม่ได้ /addgroup เข้าระบบ ต้องเพิ่มกลุ่มก่อนถึงจะเอามาจัดหมวดได้`));
+
+                // ค้นหาแบบไม่สนตัวพิมพ์ใหญ่เล็ก ("group a" = "Group A") แต่เก็บชื่อตามที่พิมพ์ครั้งแรกไว้แสดงผล
+                const shopRegex = new RegExp(`^${shopNameInput.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+                let shop = await Shop.findOne({ shopName: shopRegex });
+
+                if (!shop) {
+                    shop = await Shop.create({ shopName: shopNameInput, groupIds: [groupId], createdBy: interaction.user.id });
+                    console.log(`[ADDSHOP] สร้างหมวดใหม่ "${shopNameInput}" พร้อมกลุ่ม ${groupId} โดย ${interaction.user.id}`);
+                    return safeReply(interaction, E(`✅ สร้างหมวด **${shopNameInput}** ใหม่ พร้อมเพิ่มกลุ่ม **${trackedGroup.groupName || groupId}** เข้าไปแล้ว`));
+                }
+
+                if (shop.groupIds.includes(groupId))
+                    return safeReply(interaction, E(`⚠️ กลุ่ม **${trackedGroup.groupName || groupId}** อยู่ในหมวด **${shop.shopName}** อยู่แล้ว`));
+
+                // ใช้ findOneAndUpdate + $addToSet แทน push-then-save เพื่อกัน race condition (ข้อมูลหายถ้ามีคนกดพร้อมกัน)
+                shop = await Shop.findOneAndUpdate(
+                    { _id: shop._id },
+                    { $addToSet: { groupIds: groupId } },
+                    { returnDocument: 'after' }
+                );
+                console.log(`[ADDSHOP] เพิ่มกลุ่ม ${groupId} เข้าหมวด "${shop.shopName}" โดย ${interaction.user.id}`);
+                return safeReply(interaction, E(`✅ เพิ่มกลุ่ม **${trackedGroup.groupName || groupId}** เข้าหมวด **${shop.shopName}** แล้ว (ตอนนี้มี ${shop.groupIds.length} กลุ่มในหมวดนี้)`));
+            } catch (err) {
+                console.error(`[ADDSHOP] error: ${err.message}`);
+                return safeReply(interaction, E('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ'));
+            }
+        }
+
+        // /removeshop — [แอดมิน] ลบกลุ่มออกจากหมวด หรือลบทั้งหมวด
+        if (commandName === 'removeshop') {
+            if (!hasPermission(member))
+                return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ'));
+
+            try {
+                const shopNameInput = interaction.options.getString('shopname').trim();
+                const groupId       = interaction.options.getString('groupid');
+
+                const shop = await Shop.findOne({ shopName: { $regex: `^${shopNameInput.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
+                if (!shop)
+                    return safeReply(interaction, E(`❌ ไม่พบหมวด **${shopNameInput}**`));
+
+                if (!groupId) {
+                    // ไม่ระบุ groupId → ลบทั้งหมวด
+                    await Shop.deleteOne({ _id: shop._id });
+                    console.log(`[REMOVESHOP] ลบหมวด "${shop.shopName}" ทั้งหมด โดย ${interaction.user.id}`);
+                    return safeReply(interaction, E(`✅ ลบหมวด **${shop.shopName}** ทั้งหมดแล้ว (มี ${shop.groupIds.length} กลุ่มในหมวดนี้)`));
+                }
+
+                if (!shop.groupIds.includes(groupId.trim()))
+                    return safeReply(interaction, E(`❌ ไม่พบกลุ่ม \`${groupId}\` ในหมวด **${shop.shopName}**`));
+
+                // ใช้ findOneAndUpdate + $pull แทน filter-then-save เพื่อกัน race condition
+                const updated = await Shop.findOneAndUpdate(
+                    { _id: shop._id },
+                    { $pull: { groupIds: groupId.trim() } },
+                    { returnDocument: 'after' }
+                );
+                console.log(`[REMOVESHOP] ลบกลุ่ม ${groupId} ออกจากหมวด "${shop.shopName}" โดย ${interaction.user.id}`);
+                return safeReply(interaction, E(`✅ ลบกลุ่ม \`${groupId}\` ออกจากหมวด **${shop.shopName}** แล้ว (เหลือ ${updated.groupIds.length} กลุ่ม)`));
+            } catch (err) {
+                console.error(`[REMOVESHOP] error: ${err.message}`);
+                return safeReply(interaction, E('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ'));
+            }
+        }
+
+        // /renameshop — [แอดมิน] เปลี่ยนชื่อหมวดร้านเติม
+        if (commandName === 'renameshop') {
+            if (!hasPermission(member))
+                return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ'));
+
+            try {
+                const shopNameInput = interaction.options.getString('shopname').trim();
+                const newName       = interaction.options.getString('newname').trim();
+
+                if (!newName)
+                    return safeReply(interaction, E('❌ ชื่อใหม่ห้ามเว้นว่าง'));
+
+                const shop = await Shop.findOne({ shopName: { $regex: `^${shopNameInput.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
+                if (!shop)
+                    return safeReply(interaction, E(`❌ ไม่พบหมวด **${shopNameInput}**`));
+
+                // กันชื่อใหม่ชนกับหมวดอื่นที่มีอยู่แล้ว (ไม่สนตัวพิมพ์ใหญ่เล็ก) ยกเว้นชนกับตัวเอง
+                const clash = await Shop.findOne({
+                    _id: { $ne: shop._id },
+                    shopName: { $regex: `^${newName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' },
+                });
+                if (clash)
+                    return safeReply(interaction, E(`❌ มีหมวดชื่อ **${clash.shopName}** อยู่แล้ว ตั้งชื่อซ้ำไม่ได้`));
+
+                const oldName = shop.shopName;
+                // ใช้ findOneAndUpdate แทน mutate-then-save เพื่อความสอดคล้องและกัน race condition
+                await Shop.findOneAndUpdate({ _id: shop._id }, { shopName: newName });
+
+                console.log(`[RENAMESHOP] เปลี่ยนชื่อหมวด "${oldName}" → "${newName}" โดย ${interaction.user.id}`);
+                return safeReply(interaction, E(`✅ เปลี่ยนชื่อหมวด **${oldName}** → **${newName}** แล้ว (มี ${shop.groupIds.length} กลุ่มในหมวดนี้)`));
+            } catch (err) {
+                console.error(`[RENAMESHOP] error: ${err.message}`);
+                return safeReply(interaction, E('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ'));
+            }
+        }
+
         // /groupstatus — เช็คสถานะเข้ากลุ่ม + นับวันว่าครบ 15 วัน (เติมได้แล้ว) หรือยัง
         if (commandName === 'groupstatus') {
             try {
                 const targetUser = interaction.options.getUser('user') || interaction.user;
                 const groupIdOpt = interaction.options.getString('groupid');
+                const shopOpt    = interaction.options.getString('shop');
 
                 if (targetUser.id !== interaction.user.id && !hasPermission(member))
                     return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นที่ดูของคนอื่นได้'));
@@ -1232,13 +1422,30 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                 if (!tracker || tracker.groups.length === 0)
                     return safeReply(interaction, E(`❌ ${targetUser.id === interaction.user.id ? 'คุณ' : 'สมาชิกคนนี้'}ยังไม่มีกลุ่มที่ต้อง track เลย (รอแอดมิน /addgroup ก่อน)`));
 
-                // ถ้าระบุ groupid มา ให้แสดงแค่กลุ่มนั้น ไม่งั้นแสดงทุกกลุ่มที่ track ไว้
-                const groupsToShow = groupIdOpt
-                    ? tracker.groups.filter(x => x.groupId === groupIdOpt)
-                    : tracker.groups;
+                let groupsToShow = tracker.groups;
+                let shopLabel    = null;
 
-                if (groupsToShow.length === 0)
-                    return safeReply(interaction, E(`❌ ไม่พบกลุ่ม \`${groupIdOpt}\` ในรายการติดตาม`));
+                // ถ้าระบุ shop มา ให้กรองตามรายชื่อกลุ่มในหมวดนั้นก่อน (ค้นหาแบบไม่สนตัวพิมพ์ใหญ่เล็ก)
+                if (shopOpt) {
+                    const shop = await Shop.findOne({ shopName: { $regex: `^${shopOpt.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
+                    if (!shop)
+                        return safeReply(interaction, E(`❌ ไม่พบหมวด **${shopOpt}**`));
+                    if (shop.groupIds.length === 0)
+                        return safeReply(interaction, E(`❌ หมวด **${shop.shopName}** ยังไม่มีกลุ่มอยู่เลย`));
+
+                    groupsToShow = tracker.groups.filter(g => shop.groupIds.includes(g.groupId));
+                    shopLabel = shop.shopName;
+
+                    if (groupsToShow.length === 0)
+                        return safeReply(interaction, E(`❌ ${targetUser.id === interaction.user.id ? 'คุณ' : 'สมาชิกคนนี้'}ยังไม่ได้ track กลุ่มไหนในหมวด **${shop.shopName}** เลย`));
+                }
+
+                // ถ้าระบุ groupid มาด้วย ให้กรองซ้ำอีกชั้นจากผลของ shop (หรือทั้งหมดถ้าไม่ได้ระบุ shop)
+                if (groupIdOpt) {
+                    groupsToShow = groupsToShow.filter(x => x.groupId === groupIdOpt);
+                    if (groupsToShow.length === 0)
+                        return safeReply(interaction, E(`❌ ไม่พบกลุ่ม \`${groupIdOpt}\`${shopLabel ? ` ในหมวด **${shopLabel}**` : ' ในรายการติดตาม'}`));
+                }
 
                 const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
                 const displayName  = targetMember ? targetMember.displayName : (sync.lastDisplayName || sync.robloxUsername || targetUser.username);
@@ -1259,7 +1466,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                 else if (statuses.some(s => !s.text.startsWith('✅'))) color = 0xFEE75C;
 
                 const embed = new EmbedBuilder()
-                    .setTitle('📊 สถานะกลุ่ม Roblox')
+                    .setTitle(shopLabel ? `📊 สถานะกลุ่ม Roblox — หมวด ${shopLabel}` : '📊 สถานะกลุ่ม Roblox')
                     .setDescription(
                         `👤 **ชื่อผู้ใช้:** ${displayName} (${sync.robloxUsername || sync.lastDisplayName})\n` +
                         `🆔 **รหัสผู้ใช้:** \`${sync.robloxId}\``
@@ -1270,7 +1477,9 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                         inline: false,
                     })))
                     .setColor(color)
-                    .setFooter({ text: `ติดตามอยู่ ${tracker.groups.length} กลุ่ม • เช็คสถานะทุก 10 นาที` });
+                    .setFooter({ text: shopLabel
+                        ? `แสดง ${groupsToShow.length} กลุ่มในหมวด ${shopLabel} • เช็คสถานะทุก 10 นาที`
+                        : `ติดตามอยู่ ${tracker.groups.length} กลุ่ม • เช็คสถานะทุก 10 นาที` });
 
                 return safeReply(interaction, { embeds: [embed], flags: [MessageFlags.Ephemeral] });
             } catch (err) {
