@@ -70,6 +70,9 @@ const client = new Client( {
         GatewayIntentBits.MessageContent,
     ],
 });
+// บอทแยก interactionCreate listener ตามฟีเจอร์ (event, roblox sync, group tracker, shop ฯลฯ) ทำให้มีมากกว่า default limit (10) ของ Node
+// เพิ่ม limit ไว้กันคำเตือน MaxListenersExceededWarning ซึ่งไม่ใช่ memory leak จริง แค่จำนวน listener ที่ตั้งใจแยกไว้
+client.setMaxListeners(20);
 
 // ════════════════════════════════════════════════════════
 //  COOLDOWN
@@ -749,9 +752,9 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         new SlashCommandBuilder()
             .setName('groupstatus')
             .setDescription('เช็คสถานะการเข้ากลุ่ม Roblox และนับวันว่าเติมได้แล้วหรือยัง')
+            .addStringOption(o => o.setName('shop').setDescription('ระบุชื่อร้านเติม เพื่อดูเฉพาะกลุ่มในร้านนั้น').setRequired(true).setAutocomplete(true))
             .addUserOption(o => o.setName('user').setDescription('สมาชิกที่ต้องการดู (ไม่ใส่ = ตัวเอง)').setRequired(false))
-            .addStringOption(o => o.setName('groupid').setDescription('ระบุ Group ID ถ้า track ไว้หลายกลุ่ม (ไม่ใส่ = กลุ่มแรก)').setRequired(false).setAutocomplete(true))
-            .addStringOption(o => o.setName('shop').setDescription('ระบุชื่อร้านเติม เพื่อดูเฉพาะกลุ่มในร้านนั้น').setRequired(true).setAutocomplete(true)),
+            .addStringOption(o => o.setName('groupid').setDescription('ระบุ Group ID ถ้า track ไว้หลายกลุ่ม (ไม่ใส่ = กลุ่มแรก)').setRequired(false).setAutocomplete(true)),
     ].map(c => c.toJSON());
 
 
