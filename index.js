@@ -734,24 +734,24 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         new SlashCommandBuilder()
             .setName('addshop')
             .setDescription('[แอดมิน] เพิ่มกลุ่ม Roblox เข้าร้านเติม (สร้างร้านใหม่อัตโนมัติถ้ายังไม่มี)')
-            .addStringOption(o => o.setName('shopname').setDescription('ชื่อร้านเติม เช่น Group A').setRequired(true))
+            .addStringOption(o => o.setName('shopname').setDescription('ชื่อร้านเติม เช่น Group A (เลือกจากที่มีอยู่ หรือพิมพ์ชื่อใหม่ได้)').setRequired(true).setAutocomplete(true))
             .addStringOption(o => o.setName('groupid').setDescription('เลือกกลุ่มที่ต้องการเพิ่มเข้าร้านนี้ (ต้อง /addgroup ไว้ก่อนแล้ว)').setRequired(true).setAutocomplete(true)),
         new SlashCommandBuilder()
             .setName('removeshop')
             .setDescription('[แอดมิน] ลบกลุ่มออกจากร้านเติม หรือลบทั้งร้าน')
-            .addStringOption(o => o.setName('shopname').setDescription('ชื่อร้านเติม').setRequired(true))
+            .addStringOption(o => o.setName('shopname').setDescription('ชื่อร้านเติม').setRequired(true).setAutocomplete(true))
             .addStringOption(o => o.setName('groupid').setDescription('เลือกกลุ่มที่จะลบ (ไม่ใส่ = ลบทั้งร้าน)').setRequired(false).setAutocomplete(true)),
         new SlashCommandBuilder()
             .setName('renameshop')
             .setDescription('[แอดมิน] เปลี่ยนชื่อร้านเติม')
-            .addStringOption(o => o.setName('shopname').setDescription('ชื่อร้านปัจจุบัน').setRequired(true))
+            .addStringOption(o => o.setName('shopname').setDescription('ชื่อร้านปัจจุบัน').setRequired(true).setAutocomplete(true))
             .addStringOption(o => o.setName('newname').setDescription('ชื่อใหม่').setRequired(true)),
         new SlashCommandBuilder()
             .setName('groupstatus')
             .setDescription('เช็คสถานะการเข้ากลุ่ม Roblox และนับวันว่าเติมได้แล้วหรือยัง')
             .addUserOption(o => o.setName('user').setDescription('สมาชิกที่ต้องการดู (ไม่ใส่ = ตัวเอง)').setRequired(false))
-            .addStringOption(o => o.setName('groupid').setDescription('ระบุ Group ID ถ้า track ไว้หลายกลุ่ม (ไม่ใส่ = กลุ่มแรก)').setRequired(false))
-            .addStringOption(o => o.setName('shop').setDescription('ระบุชื่อร้านเติม เพื่อดูเฉพาะกลุ่มในร้านนั้น').setRequired(false).setAutocomplete(true)),
+            .addStringOption(o => o.setName('groupid').setDescription('ระบุ Group ID ถ้า track ไว้หลายกลุ่ม (ไม่ใส่ = กลุ่มแรก)').setRequired(false).setAutocomplete(true))
+            .addStringOption(o => o.setName('shop').setDescription('ระบุชื่อร้านเติม เพื่อดูเฉพาะกลุ่มในร้านนั้น').setRequired(true).setAutocomplete(true)),
     ].map(c => c.toJSON());
 
 
@@ -912,6 +912,29 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         }
     });
 
+    // ── Autocomplete: shopname สำหรับ /addshop, /removeshop, /renameshop ──────
+    // โชว์รายการร้านเติมที่มีอยู่จริง กันพิมพ์ผิด/สร้างร้านซ้ำโดยไม่ตั้งใจ — แต่ยังพิมพ์ชื่อใหม่เองได้ปกติ (autocomplete แค่แนะนำ ไม่บังคับเลือก)
+    client.on('interactionCreate', async (interaction) => {
+        if (!interaction.isAutocomplete()) return;
+        if (!['addshop', 'removeshop', 'renameshop'].includes(interaction.commandName)) return;
+        if (interaction.options.getFocused(true).name !== 'shopname') return;
+
+        try {
+            const typed = interaction.options.getFocused().toLowerCase();
+            const shops = await Shop.find({}).limit(100);
+
+            const filtered = shops
+                .filter(s => !typed || s.shopName.toLowerCase().includes(typed))
+                .slice(0, 25) // Discord จำกัดสูงสุด 25 choices
+                .map(s => ({ name: `${s.shopName} (${s.groupIds.length} กลุ่ม)`.slice(0, 100), value: s.shopName }));
+
+            await interaction.respond(filtered);
+        } catch (err) {
+            console.error(`[AUTOCOMPLETE] error: ${err.message}`);
+            try { await interaction.respond([]); } catch {}
+        }
+    });
+
     // ── Autocomplete: shop สำหรับ /groupstatus ──────
     // โชว์รายการร้านเติมที่มีอยู่จริง (จาก Shop) ให้เลือกแทนพิมพ์ชื่อเอง
     client.on('interactionCreate', async (interaction) => {
@@ -927,6 +950,44 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                 .filter(s => !typed || s.shopName.toLowerCase().includes(typed))
                 .slice(0, 25) // Discord จำกัดสูงสุด 25 choices
                 .map(s => ({ name: s.shopName.slice(0, 100), value: s.shopName }));
+
+            await interaction.respond(filtered);
+        } catch (err) {
+            console.error(`[AUTOCOMPLETE] error: ${err.message}`);
+            try { await interaction.respond([]); } catch {}
+        }
+    });
+
+    // ── Autocomplete: groupid สำหรับ /groupstatus ──────
+    // โชว์เฉพาะกลุ่มที่ผู้ใช้คนนั้น track อยู่จริง (ไม่ใช่กลุ่มทั้งหมดในระบบ) — กรองตาม shop ที่กรอกไปแล้วถ้ามี
+    client.on('interactionCreate', async (interaction) => {
+        if (!interaction.isAutocomplete()) return;
+        if (interaction.commandName !== 'groupstatus') return;
+        if (interaction.options.getFocused(true).name !== 'groupid') return;
+
+        try {
+            const typed      = interaction.options.getFocused().toLowerCase();
+            const targetUser = interaction.options.getUser('user') || interaction.user;
+            const shopOpt    = interaction.options.getString('shop');
+
+            const tracker = await GroupTracker.findOne({ discordId: targetUser.id });
+            if (!tracker || tracker.groups.length === 0) return interaction.respond([]);
+
+            let groupsSource = tracker.groups;
+
+            // ถ้ากรอก shop ไว้แล้ว กรองให้เหลือแค่กลุ่มในร้านนั้น (สอดคล้องกับตอนรันจริง)
+            if (shopOpt) {
+                const shop = await Shop.findOne({ shopName: { $regex: `^${shopOpt.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
+                if (shop) groupsSource = groupsSource.filter(g => shop.groupIds.includes(g.groupId));
+            }
+
+            const filtered = groupsSource
+                .filter(g => !typed || g.groupId.includes(typed) || (g.groupName || '').toLowerCase().includes(typed))
+                .slice(0, 25)
+                .map(g => {
+                    const label = g.groupName ? `${g.groupName} (${g.groupId})` : g.groupId;
+                    return { name: label.slice(0, 100), value: g.groupId };
+                });
 
             await interaction.respond(filtered);
         } catch (err) {
