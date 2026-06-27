@@ -929,7 +929,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             const filtered = shops
                 .filter(s => !typed || s.shopName.toLowerCase().includes(typed))
                 .slice(0, 25) // Discord จำกัดสูงสุด 25 choices
-                .map(s => ({ name: `${s.shopName} (${s.groupIds.length} กลุ่ม)`.slice(0, 100), value: s.shopName }));
+                .map(s => ({ name: s.shopName.slice(0, 100), value: s.shopName }));
 
             await interaction.respond(filtered);
         } catch (err) {
