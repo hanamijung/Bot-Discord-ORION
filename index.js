@@ -723,8 +723,9 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             .setDescription('ดูวันเกิดที่กำลังจะมาถึงในเดือนนี้'),
         new SlashCommandBuilder()
             .setName('setbirthday')
-            .setDescription('ตั้งหรือแก้ไขวันเกิดของตัวเอง')
-            .addStringOption(o => o.setName('birthday').setDescription('วันเกิด เช่น 25/12').setRequired(true)),
+            .setDescription('ตั้งหรือแก้ไขวันเกิดของตัวเอง (แอดมินตั้งให้คนอื่นได้)')
+            .addStringOption(o => o.setName('birthday').setDescription('วันเกิด เช่น 25/12').setRequired(true))
+            .addUserOption(o => o.setName('user').setDescription('[แอดมิน] ตั้งวันเกิดให้สมาชิกคนอื่น (ไม่ใส่ = ตัวเอง)').setRequired(false)),
         new SlashCommandBuilder()
             .setName('forcesyncroblox')
             .setDescription('บังคับ sync Roblox ของสมาชิกทันที')
@@ -1313,9 +1314,15 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
         // /setbirthday
         if (commandName === 'setbirthday') {
-            const sync = await RobloxSync.findOne({ discordId: interaction.user.id });
+            const targetUser = interaction.options.getUser('user') || interaction.user;
+
+            // ถ้าจะตั้งให้คนอื่น ต้องเป็นแอดมิน/สตาฟเท่านั้น
+            if (targetUser.id !== interaction.user.id && !hasPermission(member))
+                return interaction.reply({ content: '❌ เฉพาะแอดมินหรือสตาฟเท่านั้นที่ตั้งวันเกิดให้คนอื่นได้', flags: [MessageFlags.Ephemeral] });
+
+            const sync = await RobloxSync.findOne({ discordId: targetUser.id });
             if (!sync)
-                return interaction.reply({ content: '😕 คุณยังไม่ได้ลงทะเบียนเลย กดปุ่มลงทะเบียนก่อนนะ', flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: `😕 ${targetUser.id === interaction.user.id ? 'คุณ' : 'สมาชิกคนนี้'}ยังไม่ได้ลงทะเบียนเลย ต้องกดปุ่มลงทะเบียนก่อนนะ`, flags: [MessageFlags.Ephemeral] });
 
             const birthdayRaw = interaction.options.getString('birthday').trim();
             const bdMatch = birthdayRaw.match(/^(\d{1,2})[/\-](\d{1,2})$/);
@@ -1324,10 +1331,25 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
             const dd = bdMatch[1].padStart(2, '0');
             const mm = bdMatch[2].padStart(2, '0');
-            const birthday = `${dd}-${mm}`;
 
-            await RobloxSync.findOneAndUpdate({ discordId: interaction.user.id }, { birthday });
-            return interaction.reply({ content: `✅ บันทึกวันเกิด **${dd}/${mm}** เรียบร้อยแล้ว`, flags: [MessageFlags.Ephemeral] });
+            // เช็คว่าเป็นวันที่จริงในปฏิทิน (กัน 31/02, 32/01 ฯลฯ) — ใช้ปีอธิกสุรทินอ้างอิงเผื่อ 29/02
+            const dayNum = parseInt(dd, 10);
+            const monthNum = parseInt(mm, 10);
+            const testDate = new Date(2024, monthNum - 1, dayNum);
+            if (monthNum < 1 || monthNum > 12 || testDate.getDate() !== dayNum || testDate.getMonth() !== monthNum - 1)
+                return interaction.reply({ content: '❌ วันที่ไม่ถูกต้อง ตรวจสอบวันและเดือนอีกครั้งนะ', flags: [MessageFlags.Ephemeral] });
+
+            const birthday = `${dd}-${mm}`;
+            const isForSelf = targetUser.id === interaction.user.id;
+
+            await RobloxSync.findOneAndUpdate({ discordId: targetUser.id }, { birthday });
+
+            if (isForSelf) {
+                return interaction.reply({ content: `✅ บันทึกวันเกิด **${dd}/${mm}** เรียบร้อยแล้ว`, flags: [MessageFlags.Ephemeral] });
+            } else {
+                console.log(`[BIRTHDAY] ${interaction.user.id} ตั้งวันเกิดให้ ${targetUser.id} เป็น ${dd}/${mm} (manual override)`);
+                return interaction.reply({ content: `✅ ตั้งวันเกิดของ <@${targetUser.id}> เป็น **${dd}/${mm}** เรียบร้อยแล้ว`, flags: [MessageFlags.Ephemeral] });
+            }
         }
 
         // /forcesyncroblox
