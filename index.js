@@ -823,6 +823,61 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         };
         scheduleDaily(checkBirthday);
 
+        // ── Reconciliation: เทียบ DB กับสมาชิกจริงใน server ทุกวัน ──────
+        // กันเคสบอทออฟไลน์ตอนคนออกจาก server พอดี ทำให้ event guildMemberRemove ไม่ถูกยิง
+        // (Discord ไม่ replay event เก่าให้ย้อนหลัง) ข้อมูลเลยค้างอยู่ใน DB ตลอดไปถ้าไม่มี job นี้มาเช็คซ้ำ
+        const reconcileMembers = async () => {
+            console.log(`[RECONCILE] เริ่มเช็ค DB เทียบกับสมาชิกจริง — ${new Date().toLocaleTimeString('th-TH', { timeZone: 'Asia/Bangkok' })}`);
+            try {
+                const allSyncs = await RobloxSync.find({});
+                if (allSyncs.length === 0) {
+                    console.log(`[RECONCILE] ไม่มีข้อมูลใน RobloxSync ข้ามรอบนี้`);
+                    return;
+                }
+
+                // จัดกลุ่มตาม guildId เพื่อ fetch สมาชิกของแต่ละ guild แค่ครั้งเดียว ไม่ fetch ซ้ำทุกคน
+                const guildIds = [...new Set(allSyncs.map(s => s.guildId || mainGuildId).filter(Boolean))];
+                let removedCount = 0;
+
+                for (const gId of guildIds) {
+                    const guild = client.guilds.cache.get(gId);
+                    if (!guild) {
+                        console.log(`[RECONCILE] ⚠️ หา guild ไม่เจอ (guildId=${gId}) ข้าม`);
+                        continue;
+                    }
+
+                    // fetch สมาชิกทั้งหมดของ guild นี้ครั้งเดียว (cache ไว้ใช้เทียบ)
+                    let members;
+                    try {
+                        members = await guild.members.fetch();
+                    } catch (err) {
+                        console.error(`[RECONCILE] fetch members ไม่ได้ (guild=${guild.name}): ${err.message}`);
+                        continue;
+                    }
+
+                    const syncsInThisGuild = allSyncs.filter(s => (s.guildId || mainGuildId) === gId);
+                    for (const sync of syncsInThisGuild) {
+                        if (members.has(sync.discordId)) continue; // ยังอยู่ใน server ปกติ ข้าม
+
+                        // ไม่เจอตัวจริงใน server แล้ว แต่ยังมีข้อมูลค้างอยู่ใน DB → ลบทิ้ง
+                        await RobloxSync.deleteOne({ _id: sync._id }).catch(err => console.error(`[RECONCILE] ลบ RobloxSync ไม่ได้ (${sync.discordId}): ${err.message}`));
+                        await GroupTracker.deleteOne({ discordId: sync.discordId }).catch(err => console.error(`[RECONCILE] ลบ GroupTracker ไม่ได้ (${sync.discordId}): ${err.message}`));
+                        removedCount++;
+                        console.log(`[RECONCILE] 🧹 ลบข้อมูลค้างของ ${sync.discordId} (Roblox: ${sync.lastDisplayName}) — ไม่พบตัวใน ${guild.name} แล้ว`);
+                    }
+                }
+
+                if (removedCount > 0) {
+                    console.log(`[RECONCILE] เสร็จสิ้น — ลบข้อมูลค้างไป ${removedCount} รายการ`);
+                } else {
+                    console.log(`[RECONCILE] เสร็จสิ้น — ไม่มีข้อมูลค้าง ทุกอย่างตรงกัน`);
+                }
+            } catch (err) {
+                console.error(`[RECONCILE] error: ${err.message}`);
+            }
+        };
+        scheduleDaily(reconcileMembers);
+
     // ── Register Slash Commands ถูกย้ายเข้าใน clientReady ด้านบนแล้ว ──
 
 
@@ -830,6 +885,9 @@ const Event = mongoose.model('Event', new mongoose.Schema({
     client.on('guildMemberRemove', async (member) => {
         try {
             const sync = await RobloxSync.findOneAndDelete({ discordId: member.id });
+            // ลบ GroupTracker ด้วย กันข้อมูลค้าง (orphan) ใน DB เมื่อคนออกจาก server ไปแล้ว
+            await GroupTracker.deleteOne({ discordId: member.id }).catch(err => console.error(`[LEAVE] ลบ GroupTracker ไม่ได้: ${err.message}`));
+
             if (sync) {
                 console.log(`[LEAVE] ลบข้อมูล DB ของ ${member.user.tag} (${member.id}) | Roblox: ${sync.lastDisplayName}`);
                 // ส่ง log ไปช่อง rename log ถ้ามี
@@ -840,7 +898,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                         .setDescription(
                             `👤 **Discord:** ${member.user.tag} (${member.id})\n` +
                             `🎮 **Roblox:** ${sync.lastDisplayName}\n` +
-                            `🗑️ **ลบข้อมูลออกจาก DB แล้ว**`
+                            `🗑️ **ลบข้อมูลออกจาก DB แล้ว** (RobloxSync + GroupTracker)`
                         )
                         .setColor(0xED4245)
                         .setTimestamp();
