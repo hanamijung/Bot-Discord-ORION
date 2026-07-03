@@ -96,8 +96,6 @@ pm2 logs Bot-Discord
 
 ---
 
-## สถาปัตยกรรม
-
 ### Database Schemas (MongoDB)
 
 | Schema | เก็บอะไร |
