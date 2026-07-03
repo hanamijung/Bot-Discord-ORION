@@ -86,6 +86,8 @@ function checkCooldown(userId, eventId) {
     const last = cooldownMap.get(key) ?? 0;
     if (Date.now() - last < COOLDOWN_MS) return true;
     cooldownMap.set(key, Date.now());
+    // ลบ key ทิ้งอัตโนมัติหลังพ้น cooldown ไปแล้ว กัน Map โตไม่มีที่สิ้นสุดถ้าบอทรันนานๆ (memory leak เล็กๆ)
+    setTimeout(() => cooldownMap.delete(key), COOLDOWN_MS);
     return false;
 }
 
@@ -756,6 +758,22 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             .addStringOption(o => o.setName('shop').setDescription('ระบุชื่อร้านเติม เพื่อดูเฉพาะกลุ่มในร้านนั้น').setRequired(true).setAutocomplete(true))
             .addUserOption(o => o.setName('user').setDescription('สมาชิกที่ต้องการดู (ไม่ใส่ = ตัวเอง)').setRequired(false))
             .addStringOption(o => o.setName('groupid').setDescription('ระบุ Group ID ถ้า track ไว้หลายกลุ่ม (ไม่ใส่ = กลุ่มแรก)').setRequired(false).setAutocomplete(true)),
+        new SlashCommandBuilder()
+            .setName('reconcile')
+            .setDescription('[แอดมิน] สั่งเช็ค DB เทียบกับสมาชิกจริงทันที (ไม่ต้องรอเที่ยงคืน) ลบข้อมูลค้างของคนที่ออกไปแล้ว'),
+        new SlashCommandBuilder()
+            .setName('shoplist')
+            .setDescription('[แอดมิน] ดูรายชื่อร้านเติมทั้งหมดในระบบพร้อมจำนวนกลุ่ม'),
+        new SlashCommandBuilder()
+            .setName('grouplist')
+            .setDescription('[แอดมิน] ดูรายชื่อกลุ่ม Roblox ทั้งหมดที่ /addgroup ไว้'),
+        new SlashCommandBuilder()
+            .setName('removegroup')
+            .setDescription('[แอดมิน] ลบกลุ่มออกจากระบบ track ทั้งหมด (TrackedGroups + ทุกร้าน + ทุกคนที่ track อยู่)')
+            .addStringOption(o => o.setName('groupid').setDescription('เลือกกลุ่มที่จะลบออกจากระบบ track ทั้งหมด').setRequired(true).setAutocomplete(true)),
+        new SlashCommandBuilder()
+            .setName('systemstatus')
+            .setDescription('[แอดมิน] ดูสถานะระบบโดยรวม (batch sync, group tracker, MongoDB)'),
     ].map(c => c.toJSON());
 
 
@@ -826,13 +844,14 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         // ── Reconciliation: เทียบ DB กับสมาชิกจริงใน server ทุกวัน ──────
         // กันเคสบอทออฟไลน์ตอนคนออกจาก server พอดี ทำให้ event guildMemberRemove ไม่ถูกยิง
         // (Discord ไม่ replay event เก่าให้ย้อนหลัง) ข้อมูลเลยค้างอยู่ใน DB ตลอดไปถ้าไม่มี job นี้มาเช็คซ้ำ
+        // คืนค่า { removedCount, checkedCount } เพื่อให้ /reconcile command เอาไปโชว์ผลลัพธ์ได้ด้วย
         const reconcileMembers = async () => {
             console.log(`[RECONCILE] เริ่มเช็ค DB เทียบกับสมาชิกจริง — ${new Date().toLocaleTimeString('th-TH', { timeZone: 'Asia/Bangkok' })}`);
             try {
                 const allSyncs = await RobloxSync.find({});
                 if (allSyncs.length === 0) {
                     console.log(`[RECONCILE] ไม่มีข้อมูลใน RobloxSync ข้ามรอบนี้`);
-                    return;
+                    return { removedCount: 0, checkedCount: 0 };
                 }
 
                 // จัดกลุ่มตาม guildId เพื่อ fetch สมาชิกของแต่ละ guild แค่ครั้งเดียว ไม่ fetch ซ้ำทุกคน
@@ -872,8 +891,10 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                 } else {
                     console.log(`[RECONCILE] เสร็จสิ้น — ไม่มีข้อมูลค้าง ทุกอย่างตรงกัน`);
                 }
+                return { removedCount, checkedCount: allSyncs.length };
             } catch (err) {
                 console.error(`[RECONCILE] error: ${err.message}`);
+                return { removedCount: 0, checkedCount: 0, error: err.message };
             }
         };
         scheduleDaily(reconcileMembers);
@@ -936,19 +957,19 @@ const Event = mongoose.model('Event', new mongoose.Schema({
     // ════════════════════════════════════════════════════════
     //  SLASH COMMANDS
     // ════════════════════════════════════════════════════════
-    // ── Autocomplete: groupid สำหรับ /addshop, /removeshop ──────
+    // ── Autocomplete: groupid สำหรับ /addshop, /removeshop, /removegroup ──────
     // โชว์รายการกลุ่มที่ /addgroup ไว้แล้ว (ชื่อกลุ่ม + groupId) ให้เลือกแทนพิมพ์เลขเอง
     client.on('interactionCreate', async (interaction) => {
         if (!interaction.isAutocomplete()) return;
-        if (!['addshop', 'removeshop'].includes(interaction.commandName)) return;
+        if (!['addshop', 'removeshop', 'removegroup'].includes(interaction.commandName)) return;
         if (interaction.options.getFocused(true).name !== 'groupid') return;
 
         try {
             const typed = interaction.options.getFocused().toLowerCase();
             let choicesSource;
 
-            if (interaction.commandName === 'addshop') {
-                // /addshop: เลือกจากกลุ่มทั้งหมดที่ track ไว้ (TrackedGroups)
+            if (interaction.commandName === 'addshop' || interaction.commandName === 'removegroup') {
+                // /addshop, /removegroup: เลือกจากกลุ่มทั้งหมดที่ track ไว้ (TrackedGroups)
                 choicesSource = await TrackedGroups.find({}).limit(100);
             } else {
                 // /removeshop: เลือกจากกลุ่มที่อยู่ใน "ร้านนี้" เท่านั้น (ตาม shopname ที่กรอกไปแล้ว)
@@ -1350,8 +1371,10 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             syncs.sort((a, b) => parseInt(a.birthday) - parseInt(b.birthday));
 
             const lines = [];
+            // fetch สมาชิกทั้งหมดของ guild ครั้งเดียว แทนการยิง fetch ทีละคนใน loop (N+1 query)
+            await interaction.guild.members.fetch().catch(() => {});
             for (const sync of syncs) {
-                const m = await interaction.guild.members.fetch(sync.discordId).catch(() => null);
+                const m = interaction.guild.members.cache.get(sync.discordId);
                 const [dd, mm] = sync.birthday.split('-');
                 const name = m ? m.displayName : sync.lastDisplayName;
                 const isToday = dd === String(now.getDate()).padStart(2, '0');
@@ -1712,6 +1735,163 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             }
         }
 
+        // /reconcile — [แอดมิน] สั่งเช็ค DB เทียบกับสมาชิกจริงทันที ไม่ต้องรอ scheduleDaily ตอนเที่ยงคืน
+        if (commandName === 'reconcile') {
+            if (!hasPermission(member))
+                return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ'));
+
+            await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+            try {
+                const result = await reconcileMembers();
+                if (result.error)
+                    return interaction.editReply(`❌ เกิดข้อผิดพลาดระหว่างเช็ค: ${result.error}`);
+
+                if (result.removedCount > 0) {
+                    return interaction.editReply(
+                        `✅ เช็คเสร็จแล้ว! เช็คทั้งหมด **${result.checkedCount} คน**\n` +
+                        `🧹 ลบข้อมูลค้างของคนที่ออกจาก server ไปแล้ว **${result.removedCount} คน**\n` +
+                        `ดู log \`[RECONCILE]\` เพื่อดูรายละเอียดว่าลบใครไปบ้าง`
+                    );
+                } else {
+                    return interaction.editReply(`✅ เช็คเสร็จแล้ว! เช็คทั้งหมด **${result.checkedCount} คน** — ไม่มีข้อมูลค้าง ทุกอย่างตรงกันดี`);
+                }
+            } catch (err) {
+                console.error(`[RECONCILE] error (manual trigger): ${err.message}`);
+                return interaction.editReply('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ');
+            }
+        }
+
+        // /shoplist — [แอดมิน] ดูรายชื่อร้านเติมทั้งหมด
+        if (commandName === 'shoplist') {
+            if (!hasPermission(member))
+                return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ'));
+
+            try {
+                const shops = await Shop.find({}).sort({ shopName: 1 });
+                if (shops.length === 0)
+                    return safeReply(interaction, E('📭 ยังไม่มีร้านเติมในระบบเลย ใช้ /addshop เพื่อสร้างร้านแรกได้เลย'));
+
+                const embed = new EmbedBuilder()
+                    .setTitle('🏪 รายชื่อร้านเติมทั้งหมด')
+                    .setDescription(
+                        shops.map(s => `**${s.shopName}** — ${s.groupIds.length} กลุ่ม`).join('\n')
+                    )
+                    .setColor(0x5865F2)
+                    .setFooter({ text: `ทั้งหมด ${shops.length} ร้าน` });
+
+                return safeReply(interaction, { embeds: [embed], flags: [MessageFlags.Ephemeral] });
+            } catch (err) {
+                console.error(`[SHOPLIST] error: ${err.message}`);
+                return safeReply(interaction, E('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ'));
+            }
+        }
+
+        // /grouplist — [แอดมิน] ดูรายชื่อกลุ่มทั้งหมดที่ /addgroup ไว้
+        if (commandName === 'grouplist') {
+            if (!hasPermission(member))
+                return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ'));
+
+            try {
+                const groups = await TrackedGroups.find({}).sort({ addedAt: 1 });
+                if (groups.length === 0)
+                    return safeReply(interaction, E('📭 ยังไม่มีกลุ่มในระบบ track เลย ใช้ /addgroup เพื่อเพิ่มกลุ่มแรกได้เลย'));
+
+                const embed = new EmbedBuilder()
+                    .setTitle('📋 รายชื่อกลุ่ม Roblox ที่ track ทั้งหมด')
+                    .setDescription(
+                        groups.map(g => `**${g.groupName || 'ไม่มีชื่อ'}** — \`${g.groupId}\``).join('\n')
+                    )
+                    .setColor(0x5865F2)
+                    .setFooter({ text: `ทั้งหมด ${groups.length} กลุ่ม` });
+
+                return safeReply(interaction, { embeds: [embed], flags: [MessageFlags.Ephemeral] });
+            } catch (err) {
+                console.error(`[GROUPLIST] error: ${err.message}`);
+                return safeReply(interaction, E('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ'));
+            }
+        }
+
+        // /removegroup — [แอดมิน] ลบกลุ่มออกจากระบบ track ทั้งหมด (TrackedGroups + ทุกร้าน + ทุกคนที่ track อยู่)
+        if (commandName === 'removegroup') {
+            if (!hasPermission(member))
+                return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ'));
+
+            const groupId = interaction.options.getString('groupid').trim();
+            await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
+            try {
+                const trackedGroup = await TrackedGroups.findOne({ groupId });
+                if (!trackedGroup)
+                    return interaction.editReply(`❌ ไม่พบกลุ่ม \`${groupId}\` ในระบบ track`);
+
+                const groupLabel = trackedGroup.groupName || groupId;
+
+                // 1. ลบออกจาก TrackedGroups (global list)
+                await TrackedGroups.deleteOne({ groupId });
+
+                // 2. ลบออกจากทุกร้านที่มีกลุ่มนี้อยู่ (Shop.groupIds)
+                const shopUpdateResult = await Shop.updateMany(
+                    { groupIds: groupId },
+                    { $pull: { groupIds: groupId } }
+                );
+
+                // 3. ลบออกจาก GroupTracker ของทุกคนที่ track กลุ่มนี้อยู่ (ลบแค่ entry ในกลุ่มนี้ ไม่ลบทั้ง document)
+                const trackerUpdateResult = await GroupTracker.updateMany(
+                    { 'groups.groupId': groupId },
+                    { $pull: { groups: { groupId } } }
+                );
+
+                console.log(`[REMOVEGROUP] ลบกลุ่ม ${groupId} (${groupLabel}) โดย ${interaction.user.id} | ออกจาก ${shopUpdateResult.modifiedCount} ร้าน | ${trackerUpdateResult.modifiedCount} คน`);
+                return interaction.editReply(
+                    `✅ ลบกลุ่ม **${groupLabel}** (\`${groupId}\`) ออกจากระบบ track ทั้งหมดแล้ว\n` +
+                    `🏪 นำออกจาก **${shopUpdateResult.modifiedCount} ร้าน**\n` +
+                    `👥 นำออกจากรายการติดตามของ **${trackerUpdateResult.modifiedCount} คน**`
+                );
+            } catch (err) {
+                console.error(`[REMOVEGROUP] error: ${err.message}`);
+                return interaction.editReply('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ');
+            }
+        }
+
+        // /systemstatus — [แอดมิน] ดูสถานะระบบโดยรวม ไม่ต้อง SSH ดู pm2 log
+        if (commandName === 'systemstatus') {
+            if (!hasPermission(member))
+                return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ'));
+
+            try {
+                const mongoStateMap = { 0: '🔴 ตัดการเชื่อมต่อ', 1: '🟢 เชื่อมต่ออยู่', 2: '🟡 กำลังเชื่อมต่อ', 3: '🟡 กำลังตัดการเชื่อมต่อ' };
+                const mongoState = mongoStateMap[mongoose.connection.readyState] || '❓ ไม่ทราบสถานะ';
+
+                const totalSyncs   = await RobloxSync.countDocuments({});
+                const totalTracked = await TrackedGroups.countDocuments({});
+                const totalShops   = await Shop.countDocuments({});
+                const totalPendingGroups = await GroupTracker.countDocuments({ 'groups.status': 'pending' });
+
+                const uptimeMs = process.uptime() * 1000;
+                const uptimeStr = `${Math.floor(uptimeMs / 3600000)} ชม. ${Math.floor((uptimeMs % 3600000) / 60000)} นาที`;
+
+                const embed = new EmbedBuilder()
+                    .setTitle('🖥️ สถานะระบบโดยรวม')
+                    .setDescription(
+                        `**MongoDB:** ${mongoState}\n` +
+                        `**บอทออนไลน์มาแล้ว:** ${uptimeStr}\n\n` +
+                        `📋 **สมาชิกที่ลงทะเบียน Roblox:** ${totalSyncs} คน\n` +
+                        `🎯 **กลุ่มที่ track อยู่:** ${totalTracked} กลุ่ม\n` +
+                        `🏪 **ร้านเติมทั้งหมด:** ${totalShops} ร้าน\n` +
+                        `⏳ **คนที่ยังรอเช็คกลุ่ม (pending):** ${totalPendingGroups} คน\n\n` +
+                        `🔒 **ห้องที่ล็อคอยู่:** ${protectedChannels.size} ห้อง`
+                    )
+                    .setColor(0x5865F2)
+                    .setFooter({ text: 'Roblox sync และ Group tracker รันทุก 10 นาที | Reconciliation รันทุกเที่ยงคืน' })
+                    .setTimestamp();
+
+                return safeReply(interaction, { embeds: [embed], flags: [MessageFlags.Ephemeral] });
+            } catch (err) {
+                console.error(`[SYSTEMSTATUS] error: ${err.message}`);
+                return safeReply(interaction, E('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ'));
+            }
+        }
+
         // /setup-register
         if (commandName === 'setup-register') {
             if (!hasPermission(member))
@@ -2057,15 +2237,26 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             const robloxUsername = interaction.fields.getTextInputValue('reg_roblox_username').trim();
             const nickname       = interaction.fields.getTextInputValue('reg_nickname').trim();
             const birthdayRaw    = interaction.fields.getTextInputValue('reg_birthday').trim();
-            // validate รูปแบบ วว/ดด
-            let birthday = null;
-            if (birthdayRaw) {
-                const bdMatch = birthdayRaw.match(/^(\d{1,2})[/\-](\d{1,2})$/);
-                if (!bdMatch) return interaction.reply({ content: '❌ รูปแบบวันเกิดไม่ถูกต้อง กรุณากรอกเป็น วว/ดด เช่น 25/12', flags: [MessageFlags.Ephemeral] });
-                const dd = bdMatch[1].padStart(2, '0');
-                const mm = bdMatch[2].padStart(2, '0');
-                birthday = `${dd}-${mm}`;
-            }
+
+            // วันเกิดเป็นฟิลด์บังคับแล้ว เช็คว่าใส่มาจริงและถูกรูปแบบ วว/ดด
+            if (!birthdayRaw)
+                return interaction.reply({ content: '❌ กรุณากรอกวันเกิดด้วยนะ (วว/ดด เช่น 25/12)', flags: [MessageFlags.Ephemeral] });
+
+            const bdMatch = birthdayRaw.match(/^(\d{1,2})[/\-](\d{1,2})$/);
+            if (!bdMatch)
+                return interaction.reply({ content: '❌ รูปแบบวันเกิดไม่ถูกต้อง กรุณากรอกเป็น วว/ดด เช่น 25/12', flags: [MessageFlags.Ephemeral] });
+
+            const dd = bdMatch[1].padStart(2, '0');
+            const mm = bdMatch[2].padStart(2, '0');
+
+            // เช็คว่าเป็นวันที่จริงในปฏิทิน (กัน 31/02, 32/01 ฯลฯ) — ใช้ปีอธิกสุรทินอ้างอิงเผื่อ 29/02
+            const dayNum = parseInt(dd, 10);
+            const monthNum = parseInt(mm, 10);
+            const testDate = new Date(2024, monthNum - 1, dayNum);
+            if (monthNum < 1 || monthNum > 12 || testDate.getDate() !== dayNum || testDate.getMonth() !== monthNum - 1)
+                return interaction.reply({ content: '❌ วันที่ไม่ถูกต้อง ตรวจสอบวันและเดือนอีกครั้งนะ', flags: [MessageFlags.Ephemeral] });
+
+            const birthday = `${dd}-${mm}`;
 
             await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
@@ -2106,7 +2297,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
             await RobloxSync.findOneAndUpdate(
                 { discordId: interaction.user.id },
-                { guildId: interaction.guild.id, discordId: interaction.user.id, robloxId, robloxUsername, lastDisplayName: displayName, ...(birthday !== null && { birthday }) },
+                { guildId: interaction.guild.id, discordId: interaction.user.id, robloxId, robloxUsername, lastDisplayName: displayName, birthday },
                 { upsert: true }
             );
 
@@ -2589,7 +2780,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                         .setLabel('วันเกิด (วว/ดด)')
                         .setPlaceholder('เช่น 25/12')
                         .setStyle(TextInputStyle.Short)
-                        .setRequired(false)
+                        .setRequired(true)
                 ),
             );
             return interaction.showModal(modal);
@@ -2719,12 +2910,13 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         // ฟังก์ชัน rebuild pages จาก DB เมื่อ cache หมดอายุ
         async function getRobloxPages(guildObj) {
             const syncs = await RobloxSync.find({});
-            const lines = [];
-            for (const sync of syncs) {
-                const m = await guildObj.members.fetch(sync.discordId).catch(() => null);
+            // fetch สมาชิกทั้งหมดของ guild ครั้งเดียว แทนการยิง fetch ทีละคนใน loop (N+1 query) — ลด API call จาก 57 ครั้งเหลือ 1 ครั้ง
+            await guildObj.members.fetch().catch(() => {});
+            const lines = syncs.map(sync => {
+                const m = guildObj.members.cache.get(sync.discordId);
                 const discordName = m ? m.displayName : `<@${sync.discordId}>`;
-                lines.push(`**${discordName}**\n🎮 Roblox Username: \`${sync.robloxUsername || sync.lastDisplayName}\``);
-            }
+                return `**${discordName}**\n🎮 Roblox Username: \`${sync.robloxUsername || sync.lastDisplayName}\``;
+            });
             const PAGE = 10;
             const pages = [];
             for (let i = 0; i < lines.length; i += PAGE)
