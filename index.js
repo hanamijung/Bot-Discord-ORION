@@ -181,6 +181,15 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         lockedAt:  { type: Date, default: Date.now },
     }));
 
+    // ─── Schema: หมวด Role ที่แอดมินกำหนดเอง (ไม่ผูกกับ Discord role จริง) ─────
+    // ใช้กับ /staffpanel — 1 คนอยู่ได้หลายหมวดพร้อมกัน (เช่น เป็นทั้ง ADMIN และ IT)
+    const StaffCategory = mongoose.model('StaffCategory', new mongoose.Schema({
+        categoryName: { type: String, required: true, unique: true },
+        order:        { type: Number, required: true }, // เลขน้อย = แสดงก่อน (OWNER=1, BOSS=2, ...)
+        discordIds:   { type: [String], default: [] },
+        createdAt:    { type: Date, default: Date.now },
+    }));
+
     // ════════════════════════════════════════════════════════
     //  HELPERS
     // ════════════════════════════════════════════════════════
@@ -239,6 +248,49 @@ const Event = mongoose.model('Event', new mongoose.Schema({
     const E = (msg) => ({
         content: msg, flags: [MessageFlags.Ephemeral]
     });
+
+    // สร้าง embed + ปุ่มเลื่อนหน้าสำหรับ /staffpanel ตาม index ของหมวดที่ต้องการแสดง
+    // ใช้ทั้งตอนสร้าง panel ครั้งแรก และตอนกดปุ่ม ◀ ▶ เลื่อนดูหมวดอื่น
+    async function buildStaffPanelPage(guild, index) {
+        const categories = await StaffCategory.find({}).sort({ order: 1 });
+        if (categories.length === 0) {
+            return { content: '📭 ไม่มีหมวด Role ในระบบแล้ว', embeds: [], components: [] };
+        }
+
+        // กันกรณี index หลุดขอบ (เช่น หมวดถูกลบไปหลังสร้าง panel ไว้แล้ว)
+        const safeIndex = Math.max(0, Math.min(index, categories.length - 1));
+        const category = categories[safeIndex];
+
+        // fetch สมาชิกทั้งหมดของ guild ครั้งเดียว เพื่อโชว์ display name ปัจจุบัน (ไม่ใช่ดึงทีละคน)
+        await guild.members.fetch().catch(() => {});
+        const memberLines = category.discordIds.length > 0
+            ? category.discordIds.map(id => {
+                const m = guild.members.cache.get(id);
+                return m ? `• ${m.displayName}` : `• <@${id}> (ออกจาก server แล้ว)`;
+            }).join('\n').slice(0, 4000)
+            : '_(ยังไม่มีสมาชิกในหมวดนี้)_';
+
+        const embed = new EmbedBuilder()
+            .setTitle(`👑 ${category.categoryName}`)
+            .setDescription(memberLines)
+            .setColor(0xFFD700)
+            .setFooter({ text: `หมวด ${safeIndex + 1}/${categories.length} • ${category.discordIds.length} คน` });
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`staffpanel||${safeIndex - 1}`)
+                .setLabel('◀ ก่อนหน้า')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(safeIndex === 0),
+            new ButtonBuilder()
+                .setCustomId(`staffpanel||${safeIndex + 1}`)
+                .setLabel('ถัดไป ▶')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(safeIndex === categories.length - 1)
+        );
+
+        return { embeds: [embed], components: [row] };
+    }
 
     // ── safeReply: ป้องกัน DiscordAPIError[40060] ──────────
     // ใช้แทน interaction.reply() ทุกจุดที่อาจเกิด double-acknowledge
@@ -721,6 +773,31 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             .setName('memberlist')
             .setDescription('ดูรายชื่อสมาชิกที่ลงทะเบียนแล้วและยังไม่ได้ลงทะเบียน'),
         new SlashCommandBuilder()
+            .setName('rolelist')
+            .setDescription('ดูรายชื่อสมาชิกจัดกลุ่มตาม role ทั้งหมดใน server'),
+        new SlashCommandBuilder()
+            .setName('addcategory')
+            .setDescription('[แอดมิน] เพิ่มหมวด Role เอง (ไม่ผูกกับ role จริงใน Discord)')
+            .addStringOption(o => o.setName('categoryname').setDescription('ชื่อหมวด เช่น OWNER, BOSS, ADMIN').setRequired(true))
+            .addIntegerOption(o => o.setName('order').setDescription('ลำดับการแสดงผล เลขน้อย = แสดงก่อน').setRequired(true)),
+        new SlashCommandBuilder()
+            .setName('removecategory')
+            .setDescription('[แอดมิน] ลบหมวด Role ที่กำหนดเองทิ้ง')
+            .addStringOption(o => o.setName('categoryname').setDescription('ชื่อหมวดที่จะลบ').setRequired(true).setAutocomplete(true)),
+        new SlashCommandBuilder()
+            .setName('assignstaff')
+            .setDescription('[แอดมิน] เพิ่มสมาชิกเข้าหมวด Role ที่กำหนดเอง')
+            .addStringOption(o => o.setName('categoryname').setDescription('ชื่อหมวด').setRequired(true).setAutocomplete(true))
+            .addUserOption(o => o.setName('user').setDescription('สมาชิกที่จะเพิ่มเข้าหมวดนี้').setRequired(true)),
+        new SlashCommandBuilder()
+            .setName('unassignstaff')
+            .setDescription('[แอดมิน] นำสมาชิกออกจากหมวด Role ที่กำหนดเอง')
+            .addStringOption(o => o.setName('categoryname').setDescription('ชื่อหมวด').setRequired(true).setAutocomplete(true))
+            .addUserOption(o => o.setName('user').setDescription('สมาชิกที่จะนำออก').setRequired(true)),
+        new SlashCommandBuilder()
+            .setName('staffpanel')
+            .setDescription('[แอดมิน] สร้างแผงแสดงสมาชิกตามหมวด Role พร้อมปุ่มเลื่อนดู'),
+        new SlashCommandBuilder()
             .setName('birthdays')
             .setDescription('ดูวันเกิดที่กำลังจะมาถึงในเดือนนี้'),
         new SlashCommandBuilder()
@@ -1079,6 +1156,28 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         }
     });
 
+    // ── Autocomplete: categoryname สำหรับ /removecategory, /assignstaff, /unassignstaff ──────
+    client.on('interactionCreate', async (interaction) => {
+        if (!interaction.isAutocomplete()) return;
+        if (!['removecategory', 'assignstaff', 'unassignstaff'].includes(interaction.commandName)) return;
+        if (interaction.options.getFocused(true).name !== 'categoryname') return;
+
+        try {
+            const typed = interaction.options.getFocused().toLowerCase();
+            const categories = await StaffCategory.find({}).sort({ order: 1 }).limit(100);
+
+            const filtered = categories
+                .filter(c => !typed || c.categoryName.toLowerCase().includes(typed))
+                .slice(0, 25)
+                .map(c => ({ name: c.categoryName.slice(0, 100), value: c.categoryName }));
+
+            await interaction.respond(filtered);
+        } catch (err) {
+            console.error(`[AUTOCOMPLETE] error: ${err.message}`);
+            try { await interaction.respond([]); } catch {}
+        }
+    });
+
     client.on('interactionCreate', async (interaction) => {
         if (!interaction.isChatInputCommand()) return;
         const { commandName, member, channel, guild } = interaction;
@@ -1353,6 +1452,196 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             return interaction.editReply({ embeds: [embed] });
         }
 
+        // /rolelist — จัดกลุ่มสมาชิกตาม role ทั้งหมดใน server เหมือนหน้า Discord native
+        if (commandName === 'rolelist') {
+            if (!hasPermission(member))
+                return interaction.reply({ content: '❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ', flags: [MessageFlags.Ephemeral] });
+
+            await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
+            try {
+                await interaction.guild.members.fetch();
+
+                // เรียง role จากตำแหน่งสูงสุดไปต่ำสุด ตัด @everyone ออก (position 0 เสมอ)
+                const roles = interaction.guild.roles.cache
+                    .filter(r => r.id !== interaction.guild.id)
+                    .sort((a, b) => b.position - a.position);
+
+                // Discord native จะโชว์สมาชิกใต้ "role สูงสุดที่ตัวเองมี" เท่านั้น ไม่ใช่ทุก role ที่มี กันคนซ้ำหลายที่
+                const allMembers = interaction.guild.members.cache.filter(m => !m.user.bot);
+                const shownAlready = new Set();
+
+                const roleBlocks = [];
+                for (const role of roles.values()) {
+                    const membersInThisRole = allMembers.filter(m =>
+                        m.roles.cache.has(role.id) && !shownAlready.has(m.id) && m.roles.highest.id === role.id
+                    );
+                    membersInThisRole.forEach(m => shownAlready.add(m.id));
+
+                    const memberLines = membersInThisRole.size > 0
+                        ? membersInThisRole.map(m => `${m.displayName}`).join('\n').slice(0, 1024)
+                        : '(ไม่มีสมาชิก)';
+
+                    roleBlocks.push({ name: `👑 ${role.name} (${membersInThisRole.size})`, value: memberLines });
+                }
+
+                // คนที่ไม่มี role พิเศษเลย (มีแค่ @everyone) จัดเป็นกลุ่มท้ายสุด
+                const noRoleMembers = allMembers.filter(m => !shownAlready.has(m.id));
+                if (noRoleMembers.size > 0) {
+                    roleBlocks.push({
+                        name: `🔘 ไม่มี Role (${noRoleMembers.size})`,
+                        value: noRoleMembers.map(m => m.displayName).join('\n').slice(0, 1024)
+                    });
+                }
+
+                // Discord จำกัด field สูงสุด 25 ต่อ embed และ 10 embeds ต่อ 1 ข้อความ — แบ่งเป็นชุดละ 25 field
+                const FIELDS_PER_EMBED = 25;
+                const embeds = [];
+                for (let i = 0; i < roleBlocks.length; i += FIELDS_PER_EMBED) {
+                    const chunk = roleBlocks.slice(i, i + FIELDS_PER_EMBED);
+                    embeds.push(
+                        new EmbedBuilder()
+                            .setTitle(i === 0 ? `📋 รายชื่อสมาชิกตาม Role — ${interaction.guild.name}` : `📋 รายชื่อสมาชิกตาม Role (ต่อ)`)
+                            .addFields(chunk)
+                            .setColor(0x5865F2)
+                    );
+                }
+
+                if (embeds.length === 0)
+                    return interaction.editReply('📭 ไม่พบ role ใน server เลย');
+
+                // Discord รองรับสูงสุด 10 embeds ต่อ 1 ข้อความ ถ้า role เยอะเกินนั้นตัดส่วนเกินทิ้งพร้อมแจ้งเตือน
+                if (embeds.length > 10) {
+                    return interaction.editReply({
+                        content: `⚠️ Server มี role เยอะเกินกว่าจะแสดงในข้อความเดียว (${roleBlocks.length} role) แสดงแค่ 250 role แรก`,
+                        embeds: embeds.slice(0, 10)
+                    });
+                }
+
+                return interaction.editReply({ embeds });
+            } catch (err) {
+                console.error(`[ROLELIST] error: ${err.message}`);
+                return interaction.editReply('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ');
+            }
+        }
+
+        // /addcategory — [แอดมิน] เพิ่มหมวด Role ที่กำหนดเอง
+        if (commandName === 'addcategory') {
+            if (!hasPermission(member))
+                return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ'));
+
+            try {
+                const categoryName = interaction.options.getString('categoryname').trim();
+                const order        = interaction.options.getInteger('order');
+
+                const existing = await StaffCategory.findOne({ categoryName: { $regex: `^${categoryName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
+                if (existing)
+                    return safeReply(interaction, E(`⚠️ มีหมวด **${existing.categoryName}** อยู่แล้ว`));
+
+                await StaffCategory.create({ categoryName, order });
+                console.log(`[ADDCATEGORY] สร้างหมวด "${categoryName}" (order=${order}) โดย ${interaction.user.id}`);
+                return safeReply(interaction, E(`✅ เพิ่มหมวด **${categoryName}** แล้ว (ลำดับ: ${order})`));
+            } catch (err) {
+                console.error(`[ADDCATEGORY] error: ${err.message}`);
+                return safeReply(interaction, E('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ'));
+            }
+        }
+
+        // /removecategory — [แอดมิน] ลบหมวด Role ที่กำหนดเองทิ้ง
+        if (commandName === 'removecategory') {
+            if (!hasPermission(member))
+                return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ'));
+
+            try {
+                const categoryName = interaction.options.getString('categoryname').trim();
+                const deleted = await StaffCategory.findOneAndDelete({ categoryName: { $regex: `^${categoryName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
+                if (!deleted)
+                    return safeReply(interaction, E(`❌ ไม่พบหมวด **${categoryName}**`));
+
+                console.log(`[REMOVECATEGORY] ลบหมวด "${deleted.categoryName}" โดย ${interaction.user.id}`);
+                return safeReply(interaction, E(`✅ ลบหมวด **${deleted.categoryName}** แล้ว (มี ${deleted.discordIds.length} คนอยู่ในหมวดนี้ตอนลบ)`));
+            } catch (err) {
+                console.error(`[REMOVECATEGORY] error: ${err.message}`);
+                return safeReply(interaction, E('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ'));
+            }
+        }
+
+        // /assignstaff — [แอดมิน] เพิ่มสมาชิกเข้าหมวด Role ที่กำหนดเอง (atomic กัน race condition)
+        if (commandName === 'assignstaff') {
+            if (!hasPermission(member))
+                return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ'));
+
+            try {
+                const categoryName = interaction.options.getString('categoryname').trim();
+                const targetUser   = interaction.options.getUser('user');
+
+                const category = await StaffCategory.findOne({ categoryName: { $regex: `^${categoryName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
+                if (!category)
+                    return safeReply(interaction, E(`❌ ไม่พบหมวด **${categoryName}** ใช้ /addcategory เพื่อสร้างก่อนนะ`));
+
+                if (category.discordIds.includes(targetUser.id))
+                    return safeReply(interaction, E(`⚠️ <@${targetUser.id}> อยู่ในหมวด **${category.categoryName}** อยู่แล้ว`));
+
+                await StaffCategory.findOneAndUpdate(
+                    { _id: category._id },
+                    { $addToSet: { discordIds: targetUser.id } }
+                );
+
+                console.log(`[ASSIGNSTAFF] เพิ่ม ${targetUser.id} เข้าหมวด "${category.categoryName}" โดย ${interaction.user.id}`);
+                return safeReply(interaction, E(`✅ เพิ่ม <@${targetUser.id}> เข้าหมวด **${category.categoryName}** แล้ว`));
+            } catch (err) {
+                console.error(`[ASSIGNSTAFF] error: ${err.message}`);
+                return safeReply(interaction, E('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ'));
+            }
+        }
+
+        // /unassignstaff — [แอดมิน] นำสมาชิกออกจากหมวด Role ที่กำหนดเอง (atomic กัน race condition)
+        if (commandName === 'unassignstaff') {
+            if (!hasPermission(member))
+                return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ'));
+
+            try {
+                const categoryName = interaction.options.getString('categoryname').trim();
+                const targetUser   = interaction.options.getUser('user');
+
+                const category = await StaffCategory.findOne({ categoryName: { $regex: `^${categoryName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
+                if (!category)
+                    return safeReply(interaction, E(`❌ ไม่พบหมวด **${categoryName}**`));
+
+                if (!category.discordIds.includes(targetUser.id))
+                    return safeReply(interaction, E(`❌ <@${targetUser.id}> ไม่ได้อยู่ในหมวด **${category.categoryName}**`));
+
+                await StaffCategory.findOneAndUpdate(
+                    { _id: category._id },
+                    { $pull: { discordIds: targetUser.id } }
+                );
+
+                console.log(`[UNASSIGNSTAFF] นำ ${targetUser.id} ออกจากหมวด "${category.categoryName}" โดย ${interaction.user.id}`);
+                return safeReply(interaction, E(`✅ นำ <@${targetUser.id}> ออกจากหมวด **${category.categoryName}** แล้ว`));
+            } catch (err) {
+                console.error(`[UNASSIGNSTAFF] error: ${err.message}`);
+                return safeReply(interaction, E('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ'));
+            }
+        }
+
+        // /staffpanel — [แอดมิน] สร้างแผงถาวรแสดงสมาชิกตามหมวดที่กำหนดเอง พร้อมปุ่มเลื่อนดู
+        if (commandName === 'staffpanel') {
+            if (!hasPermission(member))
+                return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ'));
+
+            try {
+                const categories = await StaffCategory.find({}).sort({ order: 1 });
+                if (categories.length === 0)
+                    return safeReply(interaction, E('📭 ยังไม่มีหมวด Role เลย ใช้ /addcategory เพื่อสร้างหมวดแรกก่อนนะ'));
+
+                const panelData = await buildStaffPanelPage(interaction.guild, 0);
+                await interaction.channel.send(panelData);
+                return safeReply(interaction, E('✅ สร้างแผงหมวด Role แล้ว'));
+            } catch (err) {
+                console.error(`[STAFFPANEL] error: ${err.message}`);
+                return safeReply(interaction, E('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ'));
+            }
+        }
 
         // /birthdays
         if (commandName === 'birthdays') {
@@ -2955,6 +3244,29 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             if (err?.code === 40060 || err?.code === 10062) {
                 // Interaction หมดอายุหรือ acknowledged ไปแล้ว — ลอง followUp แทน
                 await interaction.followUp({ embeds: [embed], components, flags: [MessageFlags.Ephemeral] }).catch(() => {});
+            }
+        }
+    });
+
+    // ════════════════════════════════════════════════════════
+    //  BUTTON: staffpanel|| (เลื่อนดูหมวด Role ที่กำหนดเอง)
+    // ════════════════════════════════════════════════════════
+    // ปุ่มนี้ไม่มีวันหมดอายุ (persistent) เพราะเช็คจาก customId prefix ตรงๆ ไม่ใช่ collector ที่มี timeout
+    client.on('interactionCreate', async (interaction) => {
+        if (!interaction.isButton()) return;
+        if (!interaction.customId.startsWith('staffpanel||')) return;
+
+        const parts = interaction.customId.split('||');
+        const index = parseInt(parts[1]);
+
+        try {
+            const pageData = await buildStaffPanelPage(interaction.guild, index);
+            await interaction.update(pageData);
+        } catch (err) {
+            console.error(`[STAFFPANEL] error (button): ${err.message}`);
+            if (err?.code === 40060 || err?.code === 10062) {
+                const pageData = await buildStaffPanelPage(interaction.guild, index).catch(() => null);
+                if (pageData) await interaction.followUp({ ...pageData, flags: [MessageFlags.Ephemeral] }).catch(() => {});
             }
         }
     });
