@@ -274,22 +274,34 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             .setTitle(`👑 ${category.categoryName}`)
             .setDescription(memberLines)
             .setColor(0xFFD700)
-            .setFooter({ text: `หมวด ${safeIndex + 1}/${categories.length} • ${category.discordIds.length} คน` });
+            .setFooter({ text: `${category.discordIds.length} คน` });
 
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId(`staffpanel||${safeIndex - 1}`)
-                .setLabel('◀ ก่อนหน้า')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(safeIndex === 0),
-            new ButtonBuilder()
-                .setCustomId(`staffpanel||${safeIndex + 1}`)
-                .setLabel('ถัดไป ▶')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(safeIndex === categories.length - 1)
-        );
+        // สร้างปุ่มตามจำนวนหมวดจริง 1 ปุ่ม/หมวด แทนปุ่มก่อนหน้า/ถัดไป — Discord จำกัด 5 ปุ่ม/แถว, 5 แถว/ข้อความ (สูงสุด 25 ปุ่ม)
+        // ใช้ index เป็น customId เสมอ (ไม่ใช่ชื่อหมวด) กัน customId เกิน 100 ตัวอักษรถ้าตั้งชื่อหมวดยาว
+        const BUTTONS_PER_ROW = 5;
+        const MAX_BUTTONS = 25;
+        if (categories.length > MAX_BUTTONS) {
+            console.log(`[STAFFPANEL] ⚠️ มีหมวดเกิน ${MAX_BUTTONS} (${categories.length} หมวด) แสดงปุ่มได้แค่ ${MAX_BUTTONS} หมวดแรก`);
+        }
 
-        return { embeds: [embed], components: [row] };
+        const buttonCategories = categories.slice(0, MAX_BUTTONS);
+        const components = [];
+        for (let i = 0; i < buttonCategories.length; i += BUTTONS_PER_ROW) {
+            const rowCategories = buttonCategories.slice(i, i + BUTTONS_PER_ROW);
+            const row = new ActionRowBuilder().addComponents(
+                rowCategories.map((c, offset) => {
+                    const catIndex = i + offset;
+                    return new ButtonBuilder()
+                        .setCustomId(`staffpanel||${catIndex}`)
+                        .setLabel(c.categoryName.slice(0, 80)) // Discord จำกัด label ไม่เกิน 80 ตัวอักษร
+                        .setStyle(catIndex === safeIndex ? ButtonStyle.Primary : ButtonStyle.Secondary)
+                        .setDisabled(catIndex === safeIndex); // ปุ่มหมวดที่กำลังดูอยู่กดซ้ำไม่ได้ กันรีเฟรชไม่จำเป็น
+                })
+            );
+            components.push(row);
+        }
+
+        return { embeds: [embed], components };
     }
 
     // ── safeReply: ป้องกัน DiscordAPIError[40060] ──────────
