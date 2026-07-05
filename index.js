@@ -281,10 +281,51 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         return (r << 16) + (g << 8) + b;
     }
 
-    async function buildStaffPanelPage(guild, index) {
+    // สร้างแค่ปุ่มกริดสำหรับ panel สาธารณะที่ค้างอยู่ในห้อง — ไม่มีเนื้อหาสมาชิกอยู่บนนี้เลย
+    // เพราะถ้าโชว์เนื้อหาบน panel สาธารณะ พอมีหลายคนกดพร้อมกันจะแย่งกันเปลี่ยนหน้าเดียวกัน เห็นข้อมูลสลับไปมาแบบมั่ว
+    async function buildStaffPanelHeader() {
         const categories = await StaffCategory.find({}).sort({ order: 1 });
         if (categories.length === 0) {
-            return { content: '📭 ไม่มีหมวด Role ในระบบแล้ว', embeds: [], components: [] };
+            return { content: '📭 ยังไม่มีหมวด Role เลย ใช้ /addcategory เพื่อสร้างหมวดแรกก่อนนะ', embeds: [], components: [] };
+        }
+
+        const embed = new EmbedBuilder()
+            .setTitle('👑 หมวด Role ทั้งหมด')
+            .setDescription('กดปุ่มหมวดที่ต้องการดู — ผลลัพธ์จะเห็นแค่คุณคนเดียวเท่านั้น')
+            .setColor(0x5865F2);
+
+        // Discord จำกัด 5 ปุ่ม/แถว, 5 แถว/ข้อความ (สูงสุด 25 ปุ่ม)
+        const BUTTONS_PER_ROW = 5;
+        const MAX_BUTTONS = 25;
+        if (categories.length > MAX_BUTTONS) {
+            console.log(`[STAFFPANEL] ⚠️ มีหมวดเกิน ${MAX_BUTTONS} (${categories.length} หมวด) แสดงปุ่มได้แค่ ${MAX_BUTTONS} หมวดแรก`);
+        }
+
+        const buttonCategories = categories.slice(0, MAX_BUTTONS);
+        const components = [];
+        for (let i = 0; i < buttonCategories.length; i += BUTTONS_PER_ROW) {
+            const rowCategories = buttonCategories.slice(i, i + BUTTONS_PER_ROW);
+            const row = new ActionRowBuilder().addComponents(
+                rowCategories.map((c, offset) => {
+                    const catIndex = i + offset;
+                    return new ButtonBuilder()
+                        .setCustomId(`staffpanel||${catIndex}`)
+                        .setEmoji(getCategoryIcon(c.categoryName))
+                        .setLabel(c.categoryName.slice(0, 80)) // Discord จำกัด label ไม่เกิน 80 ตัวอักษร
+                        .setStyle(ButtonStyle.Secondary); // ไม่มีปุ่มไหน "active" อีกต่อไป เพราะแต่ละคนกดแล้วเห็นแค่ของตัวเอง
+                })
+            );
+            components.push(row);
+        }
+
+        return { embeds: [embed], components };
+    }
+
+    // สร้าง embed ของหมวดเดียว ใช้ตอบแบบ ephemeral เท่านั้น (เห็นแค่คนกด ไม่กระทบ panel สาธารณะ)
+    async function buildCategoryEmbed(guild, index) {
+        const categories = await StaffCategory.find({}).sort({ order: 1 });
+        if (categories.length === 0) {
+            return { content: '📭 ไม่มีหมวด Role ในระบบแล้ว', embeds: [] };
         }
 
         // กันกรณี index หลุดขอบ (เช่น หมวดถูกลบไปหลังสร้าง panel ไว้แล้ว)
@@ -326,34 +367,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             .setFooter({ text: `อัปเดตล่าสุด` })
             .setTimestamp();
 
-        // สร้างปุ่มตามจำนวนหมวดจริง 1 ปุ่ม/หมวด แทนปุ่มก่อนหน้า/ถัดไป — Discord จำกัด 5 ปุ่ม/แถว, 5 แถว/ข้อความ (สูงสุด 25 ปุ่ม)
-        // ใช้ index เป็น customId เสมอ (ไม่ใช่ชื่อหมวด) กัน customId เกิน 100 ตัวอักษรถ้าตั้งชื่อหมวดยาว
-        const BUTTONS_PER_ROW = 5;
-        const MAX_BUTTONS = 25;
-        if (categories.length > MAX_BUTTONS) {
-            console.log(`[STAFFPANEL] ⚠️ มีหมวดเกิน ${MAX_BUTTONS} (${categories.length} หมวด) แสดงปุ่มได้แค่ ${MAX_BUTTONS} หมวดแรก`);
-        }
-
-        const buttonCategories = categories.slice(0, MAX_BUTTONS);
-        const components = [];
-        for (let i = 0; i < buttonCategories.length; i += BUTTONS_PER_ROW) {
-            const rowCategories = buttonCategories.slice(i, i + BUTTONS_PER_ROW);
-            const row = new ActionRowBuilder().addComponents(
-                rowCategories.map((c, offset) => {
-                    const catIndex = i + offset;
-                    return new ButtonBuilder()
-                        .setCustomId(`staffpanel||${catIndex}`)
-                        .setEmoji(getCategoryIcon(c.categoryName))
-                        .setLabel(c.categoryName.slice(0, 80)) // Discord จำกัด label ไม่เกิน 80 ตัวอักษร
-                        .setStyle(catIndex === safeIndex ? ButtonStyle.Primary : ButtonStyle.Secondary);
-                        // หมายเหตุ: ไม่ disable ปุ่มหมวดปัจจุบันแล้ว เพราะ panel ไม่ได้อัปเดตแบบ real-time
-                        // ต้องกดปุ่มซ้ำเพื่อดึงข้อมูลล่าสุดจาก DB มาแสดง (เช่น หลังมีคนถูก /assignstaff เพิ่มเข้าหมวดนี้)
-                })
-            );
-            components.push(row);
-        }
-
-        return { embeds: [embed], components };
+        return { embeds: [embed] };
     }
 
     // ── safeReply: ป้องกัน DiscordAPIError[40060] ──────────
@@ -1705,11 +1719,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                 return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ'));
 
             try {
-                const categories = await StaffCategory.find({}).sort({ order: 1 });
-                if (categories.length === 0)
-                    return safeReply(interaction, E('📭 ยังไม่มีหมวด Role เลย ใช้ /addcategory เพื่อสร้างหมวดแรกก่อนนะ'));
-
-                const panelData = await buildStaffPanelPage(interaction.guild, 0);
+                const panelData = await buildStaffPanelHeader();
                 await interaction.channel.send(panelData);
                 return safeReply(interaction, E('✅ สร้างแผงหมวด Role แล้ว'));
             } catch (err) {
@@ -3428,9 +3438,10 @@ const Event = mongoose.model('Event', new mongoose.Schema({
     });
 
     // ════════════════════════════════════════════════════════
-    //  BUTTON: staffpanel|| (เลื่อนดูหมวด Role ที่กำหนดเอง)
+    //  BUTTON: staffpanel|| (ดูสมาชิกในหมวด Role ที่กำหนดเอง)
     // ════════════════════════════════════════════════════════
     // ปุ่มนี้ไม่มีวันหมดอายุ (persistent) เพราะเช็คจาก customId prefix ตรงๆ ไม่ใช่ collector ที่มี timeout
+    // ตอบกลับแบบ ephemeral เสมอ (เห็นแค่คนกด) ไม่แก้ข้อความ panel สาธารณะ กันหลายคนกดพร้อมกันแล้วเห็นข้อมูลสลับกันมั่ว
     client.on('interactionCreate', async (interaction) => {
         if (!interaction.isButton()) return;
         if (!interaction.customId.startsWith('staffpanel||')) return;
@@ -3439,14 +3450,13 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         const index = parseInt(parts[1]);
 
         try {
-            const pageData = await buildStaffPanelPage(interaction.guild, index);
-            await interaction.update(pageData);
+            const categoryData = await buildCategoryEmbed(interaction.guild, index);
+            await interaction.reply({ ...categoryData, flags: [MessageFlags.Ephemeral] });
         } catch (err) {
             console.error(`[STAFFPANEL] error (button): ${err.message}`);
-            if (err?.code === 40060 || err?.code === 10062) {
-                const pageData = await buildStaffPanelPage(interaction.guild, index).catch(() => null);
-                if (pageData) await interaction.followUp({ ...pageData, flags: [MessageFlags.Ephemeral] }).catch(() => {});
-            }
+            try {
+                await interaction.reply({ content: '❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ', flags: [MessageFlags.Ephemeral] });
+            } catch {}
         }
     });
 
