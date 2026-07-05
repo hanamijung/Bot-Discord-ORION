@@ -252,6 +252,35 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
     // สร้าง embed + ปุ่มเลื่อนหน้าสำหรับ /staffpanel ตาม index ของหมวดที่ต้องการแสดง
     // ใช้ทั้งตอนสร้าง panel ครั้งแรก และตอนกดปุ่ม ◀ ▶ เลื่อนดูหมวดอื่น
+    // เลือกไอคอนให้ตรงกับชื่อหมวด (จับคำสำคัญในชื่อ) มี fallback เผื่อชื่อหมวดไม่ตรงกับที่ระบุไว้
+    function getCategoryIcon(categoryName) {
+        const name = categoryName.toLowerCase();
+        const iconMap = [
+            [/owner/, '👑'], [/sub\s?boss/, '🎩'], [/boss/, '💼'],
+            [/admin/, '🛡️'], [/guard/, '🔰'], [/lead/, '🎖️'],
+            [/mascot|design|art/, '🎨'], [/it|dev|tech/, '💻'],
+            [/sponsor/, '💎'], [/member/, '👤'],
+        ];
+        for (const [pattern, icon] of iconMap) {
+            if (pattern.test(name)) return icon;
+        }
+        return '⭐'; // fallback สำหรับหมวดที่ไม่ตรงกับ pattern ไหนเลย
+    }
+
+    // ไล่สีจากทอง (อันดับสูงสุด) → ม่วง (กลาง) → ฟ้า (ต่ำสุด) ตามสัดส่วนตำแหน่งในลำดับ order
+    function getCategoryColor(index, total) {
+        const goldRGB   = [255, 215, 0];
+        const purpleRGB = [147, 112, 219];
+        const blueRGB   = [88, 101, 242];
+        const ratio = total <= 1 ? 0 : index / (total - 1);
+        const [start, end] = ratio < 0.5 ? [goldRGB, purpleRGB] : [purpleRGB, blueRGB];
+        const localRatio = ratio < 0.5 ? ratio * 2 : (ratio - 0.5) * 2;
+        const r = Math.round(start[0] + (end[0] - start[0]) * localRatio);
+        const g = Math.round(start[1] + (end[1] - start[1]) * localRatio);
+        const b = Math.round(start[2] + (end[2] - start[2]) * localRatio);
+        return (r << 16) + (g << 8) + b;
+    }
+
     async function buildStaffPanelPage(guild, index) {
         const categories = await StaffCategory.find({}).sort({ order: 1 });
         if (categories.length === 0) {
@@ -261,16 +290,17 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         // กันกรณี index หลุดขอบ (เช่น หมวดถูกลบไปหลังสร้าง panel ไว้แล้ว)
         const safeIndex = Math.max(0, Math.min(index, categories.length - 1));
         const category = categories[safeIndex];
+        const icon = getCategoryIcon(category.categoryName);
 
         // fetch สมาชิกทั้งหมดของ guild ครั้งเดียว เพื่อโชว์ display name ปัจจุบัน (ไม่ใช่ดึงทีละคน)
         await guild.members.fetch().catch(() => {});
-        const allLines = category.discordIds.map(id => {
+        const allLines = category.discordIds.map((id, i) => {
             const m = guild.members.cache.get(id);
-            return m ? `• ${m.displayName}` : `• <@${id}> (ออกจาก server แล้ว)`;
+            const name = m ? m.displayName : `~~ออกจาก server แล้ว~~`;
+            return `\`${String(i + 1).padStart(2, '0')}\` ${m ? `<@${id}>` : name} ${m ? `— *${name}*` : ''}`;
         });
 
         // ตัดแบบสวยงาม (ไม่ตัดชื่อขาดกลางคัน) ถ้าเกิน Discord embed description limit (4096 ตัวอักษร)
-        // เผื่อ buffer ไว้ ~200 ตัวอักษรสำหรับข้อความ "...และอีก X คน"
         const SAFE_LIMIT = 3800;
         let memberLines;
         if (allLines.length === 0) {
@@ -288,10 +318,14 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         }
 
         const embed = new EmbedBuilder()
-            .setTitle(`👑 ${category.categoryName}`)
-            .setDescription(memberLines)
-            .setColor(0xFFD700)
-            .setFooter({ text: `${category.discordIds.length} คน` });
+            .setAuthor({ name: guild.name, iconURL: guild.iconURL() || undefined })
+            .setTitle(`${icon}　${category.categoryName}`)
+            .setDescription(`>>> ${memberLines}`)
+            .setColor(getCategoryColor(safeIndex, categories.length))
+            .setThumbnail(guild.iconURL({ size: 256 }) || null)
+            .addFields({ name: '\u200b', value: `👥 **สมาชิกในหมวดนี้:** ${category.discordIds.length} คน` })
+            .setFooter({ text: `หมวด ${safeIndex + 1}/${categories.length} • อัปเดตล่าสุด` })
+            .setTimestamp();
 
         // สร้างปุ่มตามจำนวนหมวดจริง 1 ปุ่ม/หมวด แทนปุ่มก่อนหน้า/ถัดไป — Discord จำกัด 5 ปุ่ม/แถว, 5 แถว/ข้อความ (สูงสุด 25 ปุ่ม)
         // ใช้ index เป็น customId เสมอ (ไม่ใช่ชื่อหมวด) กัน customId เกิน 100 ตัวอักษรถ้าตั้งชื่อหมวดยาว
@@ -310,9 +344,11 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                     const catIndex = i + offset;
                     return new ButtonBuilder()
                         .setCustomId(`staffpanel||${catIndex}`)
+                        .setEmoji(getCategoryIcon(c.categoryName))
                         .setLabel(c.categoryName.slice(0, 80)) // Discord จำกัด label ไม่เกิน 80 ตัวอักษร
-                        .setStyle(catIndex === safeIndex ? ButtonStyle.Primary : ButtonStyle.Secondary)
-                        .setDisabled(catIndex === safeIndex); // ปุ่มหมวดที่กำลังดูอยู่กดซ้ำไม่ได้ กันรีเฟรชไม่จำเป็น
+                        .setStyle(catIndex === safeIndex ? ButtonStyle.Primary : ButtonStyle.Secondary);
+                        // หมายเหตุ: ไม่ disable ปุ่มหมวดปัจจุบันแล้ว เพราะ panel ไม่ได้อัปเดตแบบ real-time
+                        // ต้องกดปุ่มซ้ำเพื่อดึงข้อมูลล่าสุดจาก DB มาแสดง (เช่น หลังมีคนถูก /assignstaff เพิ่มเข้าหมวดนี้)
                 })
             );
             components.push(row);
