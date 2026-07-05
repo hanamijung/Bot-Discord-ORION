@@ -297,7 +297,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         const allLines = category.discordIds.map((id, i) => {
             const m = guild.members.cache.get(id);
             const name = m ? m.displayName : `~~ออกจาก server แล้ว~~`;
-            return `\`${String(i + 1).padStart(2, '0')}\` ${m ? `<@${id}>` : name} ${m ? `— *${name}*` : ''}`;
+            return `\`${String(i + 1).padStart(2, '0')}\` ${m ? `<@${id}>` : name}`;
         });
 
         // ตัดแบบสวยงาม (ไม่ตัดชื่อขาดกลางคัน) ถ้าเกิน Discord embed description limit (4096 ตัวอักษร)
@@ -322,9 +322,8 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             .setTitle(`${icon}　${category.categoryName}`)
             .setDescription(`>>> ${memberLines}`)
             .setColor(getCategoryColor(safeIndex, categories.length))
-            .setThumbnail(guild.iconURL({ size: 256 }) || null)
             .addFields({ name: '\u200b', value: `👥 **สมาชิกในหมวดนี้:** ${category.discordIds.length} คน` })
-            .setFooter({ text: `หมวด ${safeIndex + 1}/${categories.length} • อัปเดตล่าสุด` })
+            .setFooter({ text: `อัปเดตล่าสุด` })
             .setTimestamp();
 
         // สร้างปุ่มตามจำนวนหมวดจริง 1 ปุ่ม/หมวด แทนปุ่มก่อนหน้า/ถัดไป — Discord จำกัด 5 ปุ่ม/แถว, 5 แถว/ข้อความ (สูงสุด 25 ปุ่ม)
