@@ -184,10 +184,11 @@ const Event = mongoose.model('Event', new mongoose.Schema({
     // ─── Schema: หมวด Role ที่แอดมินกำหนดเอง (ไม่ผูกกับ Discord role จริง) ─────
     // ใช้กับ /staffpanel — 1 คนอยู่ได้หลายหมวดพร้อมกัน (เช่น เป็นทั้ง ADMIN และ IT)
     const StaffCategory = mongoose.model('StaffCategory', new mongoose.Schema({
-        categoryName: { type: String, required: true, unique: true },
-        order:        { type: Number, required: true }, // เลขน้อย = แสดงก่อน (OWNER=1, BOSS=2, ...)
-        discordIds:   { type: [String], default: [] },
-        createdAt:    { type: Date, default: Date.now },
+        categoryName:          { type: String, required: true, unique: true },
+        order:                 { type: Number, required: true }, // เลขน้อย = แสดงก่อน (OWNER=1, BOSS=2, ...)
+        discordIds:            { type: [String], default: [] },
+        autoAssignOnRegister:  { type: Boolean, default: false }, // เปิดไว้ = คนใหม่ที่ /register จะถูกเพิ่มเข้าหมวดนี้อัตโนมัติ
+        createdAt:             { type: Date, default: Date.now },
     }));
 
     // ════════════════════════════════════════════════════════
@@ -263,12 +264,28 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
         // fetch สมาชิกทั้งหมดของ guild ครั้งเดียว เพื่อโชว์ display name ปัจจุบัน (ไม่ใช่ดึงทีละคน)
         await guild.members.fetch().catch(() => {});
-        const memberLines = category.discordIds.length > 0
-            ? category.discordIds.map(id => {
-                const m = guild.members.cache.get(id);
-                return m ? `• ${m.displayName}` : `• <@${id}> (ออกจาก server แล้ว)`;
-            }).join('\n').slice(0, 4000)
-            : '_(ยังไม่มีสมาชิกในหมวดนี้)_';
+        const allLines = category.discordIds.map(id => {
+            const m = guild.members.cache.get(id);
+            return m ? `• ${m.displayName}` : `• <@${id}> (ออกจาก server แล้ว)`;
+        });
+
+        // ตัดแบบสวยงาม (ไม่ตัดชื่อขาดกลางคัน) ถ้าเกิน Discord embed description limit (4096 ตัวอักษร)
+        // เผื่อ buffer ไว้ ~200 ตัวอักษรสำหรับข้อความ "...และอีก X คน"
+        const SAFE_LIMIT = 3800;
+        let memberLines;
+        if (allLines.length === 0) {
+            memberLines = '_(ยังไม่มีสมาชิกในหมวดนี้)_';
+        } else {
+            let acc = '';
+            let shownCount = 0;
+            for (const line of allLines) {
+                if ((acc + line).length > SAFE_LIMIT) break;
+                acc += (acc ? '\n' : '') + line;
+                shownCount++;
+            }
+            const remaining = allLines.length - shownCount;
+            memberLines = remaining > 0 ? `${acc}\n\n_...และอีก ${remaining} คน (แสดงได้สูงสุดตามพื้นที่ embed)_` : acc;
+        }
 
         const embed = new EmbedBuilder()
             .setTitle(`👑 ${category.categoryName}`)
@@ -810,6 +827,17 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             .setName('staffpanel')
             .setDescription('[แอดมิน] สร้างแผงแสดงสมาชิกตามหมวด Role พร้อมปุ่มเลื่อนดู'),
         new SlashCommandBuilder()
+            .setName('importcategory')
+            .setDescription('[แอดมิน] ดึงสมาชิกจาก Discord role จริงมาใส่ในหมวดที่กำหนดเองทั้งหมดในคำสั่งเดียว')
+            .addStringOption(o => o.setName('categoryname').setDescription('ชื่อหมวดที่จะนำเข้า (สร้างใหม่อัตโนมัติถ้ายังไม่มี)').setRequired(true).setAutocomplete(true))
+            .addRoleOption(o => o.setName('role').setDescription('Discord role ที่จะดึงสมาชิกมา').setRequired(true))
+            .addIntegerOption(o => o.setName('order').setDescription('ลำดับการแสดงผล (ใช้ตอนสร้างหมวดใหม่เท่านั้น เลขน้อย = แสดงก่อน)').setRequired(false)),
+        new SlashCommandBuilder()
+            .setName('setautocategory')
+            .setDescription('[แอดมิน] ตั้งว่าสมาชิกใหม่ที่ /register จะถูกเพิ่มเข้าหมวดนี้อัตโนมัติหรือไม่')
+            .addStringOption(o => o.setName('categoryname').setDescription('ชื่อหมวด').setRequired(true).setAutocomplete(true))
+            .addBooleanOption(o => o.setName('enabled').setDescription('true = เปิด auto-assign, false = ปิด').setRequired(true)),
+        new SlashCommandBuilder()
             .setName('birthdays')
             .setDescription('ดูวันเกิดที่กำลังจะมาถึงในเดือนนี้'),
         new SlashCommandBuilder()
@@ -1168,10 +1196,10 @@ const Event = mongoose.model('Event', new mongoose.Schema({
         }
     });
 
-    // ── Autocomplete: categoryname สำหรับ /removecategory, /assignstaff, /unassignstaff ──────
+    // ── Autocomplete: categoryname สำหรับ /removecategory, /assignstaff, /unassignstaff, /importcategory, /setautocategory ──────
     client.on('interactionCreate', async (interaction) => {
         if (!interaction.isAutocomplete()) return;
-        if (!['removecategory', 'assignstaff', 'unassignstaff'].includes(interaction.commandName)) return;
+        if (!['removecategory', 'assignstaff', 'unassignstaff', 'importcategory', 'setautocategory'].includes(interaction.commandName)) return;
         if (interaction.options.getFocused(true).name !== 'categoryname') return;
 
         try {
@@ -1654,6 +1682,89 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                 return safeReply(interaction, E('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ'));
             }
         }
+
+        // /importcategory — [แอดมิน] ดึงสมาชิกจาก Discord role จริงมาใส่หมวดที่กำหนดเองทั้งหมดในคำสั่งเดียว
+        if (commandName === 'importcategory') {
+            if (!hasPermission(member))
+                return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ'));
+
+            const categoryName = interaction.options.getString('categoryname').trim();
+            const role         = interaction.options.getRole('role');
+            const orderOpt     = interaction.options.getInteger('order');
+
+            await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
+            try {
+                // หาหมวดที่มีอยู่แล้ว (ไม่สนตัวพิมพ์ใหญ่เล็ก) หรือสร้างใหม่ถ้ายังไม่มี
+                let category = await StaffCategory.findOne({ categoryName: { $regex: `^${categoryName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } });
+
+                if (!category) {
+                    if (orderOpt === null)
+                        return interaction.editReply(`❌ ยังไม่มีหมวด **${categoryName}** ต้องระบุ \`order\` ด้วยตอนสร้างหมวดใหม่ (เช่น \`order:9\`)`);
+                    category = await StaffCategory.create({ categoryName, order: orderOpt });
+                    console.log(`[IMPORTCATEGORY] สร้างหมวดใหม่ "${categoryName}" (order=${orderOpt}) โดย ${interaction.user.id}`);
+                }
+
+                // ดึงสมาชิกทั้งหมดของ guild มาเช็คว่าใครมี role นี้จริง (fetch ครั้งเดียว ไม่ query ทีละคน)
+                await interaction.guild.members.fetch();
+                const membersWithRole = interaction.guild.members.cache.filter(m => m.roles.cache.has(role.id) && !m.user.bot);
+
+                if (membersWithRole.size === 0)
+                    return interaction.editReply(`⚠️ ไม่พบสมาชิกที่มี role **${role.name}** เลย (บอทไม่นับรวมด้วย)`);
+
+                const newIds = membersWithRole.map(m => m.id).filter(id => !category.discordIds.includes(id));
+                const alreadyInCount = membersWithRole.size - newIds.length;
+
+                if (newIds.length > 0) {
+                    await StaffCategory.findOneAndUpdate(
+                        { _id: category._id },
+                        { $addToSet: { discordIds: { $each: newIds } } }
+                    );
+                }
+
+                console.log(`[IMPORTCATEGORY] นำเข้า ${newIds.length} คนจาก role "${role.name}" เข้าหมวด "${category.categoryName}" โดย ${interaction.user.id} (ข้าม ${alreadyInCount} คนที่มีอยู่แล้ว)`);
+                return interaction.editReply(
+                    `✅ นำเข้าสมาชิกจาก role **${role.name}** เข้าหมวด **${category.categoryName}** แล้ว\n` +
+                    `➕ เพิ่มใหม่ **${newIds.length} คน**\n` +
+                    (alreadyInCount > 0 ? `⏭️ ข้าม **${alreadyInCount} คน** (อยู่ในหมวดนี้อยู่แล้ว)\n` : '') +
+                    `📊 รวมตอนนี้ในหมวด: **${category.discordIds.length + newIds.length} คน**`
+                );
+            } catch (err) {
+                console.error(`[IMPORTCATEGORY] error: ${err.message}`);
+                return interaction.editReply('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ');
+            }
+        }
+
+        // /setautocategory — [แอดมิน] เปิด/ปิดการเพิ่มสมาชิกใหม่เข้าหมวดนี้อัตโนมัติตอน /register
+        if (commandName === 'setautocategory') {
+            if (!hasPermission(member))
+                return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ'));
+
+            try {
+                const categoryName = interaction.options.getString('categoryname').trim();
+                const enabled      = interaction.options.getBoolean('enabled');
+
+                const category = await StaffCategory.findOneAndUpdate(
+                    { categoryName: { $regex: `^${categoryName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' } },
+                    { autoAssignOnRegister: enabled },
+                    { returnDocument: 'after' }
+                );
+
+                if (!category)
+                    return safeReply(interaction, E(`❌ ไม่พบหมวด **${categoryName}**`));
+
+                console.log(`[SETAUTOCATEGORY] ตั้ง auto-assign หมวด "${category.categoryName}" เป็น ${enabled} โดย ${interaction.user.id}`);
+                return safeReply(interaction, E(
+                    enabled
+                        ? `✅ เปิด auto-assign หมวด **${category.categoryName}** แล้ว — คนใหม่ที่ /register จะถูกเพิ่มเข้าหมวดนี้อัตโนมัติ`
+                        : `✅ ปิด auto-assign หมวด **${category.categoryName}** แล้ว — คนใหม่จะไม่ถูกเพิ่มเข้าหมวดนี้อัตโนมัติอีก`
+                ));
+            } catch (err) {
+                console.error(`[SETAUTOCATEGORY] error: ${err.message}`);
+                return safeReply(interaction, E('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ'));
+            }
+        }
+
 
         // /birthdays
         if (commandName === 'birthdays') {
@@ -2612,6 +2723,21 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                     console.log(`[REGISTER] เพิ่ม ${interaction.user.id} เข้า track ${trackedGroups.length} กลุ่มที่มีอยู่แล้ว`);
             } catch (err) {
                 console.error(`[REGISTER] error เพิ่ม group tracking: ${err.message}`);
+            }
+
+            // เพิ่มสมาชิกใหม่เข้าหมวด Role ที่เปิด auto-assign ไว้ (ตั้งผ่าน /setautocategory)
+            try {
+                const autoCategories = await StaffCategory.find({ autoAssignOnRegister: true });
+                for (const cat of autoCategories) {
+                    await StaffCategory.findOneAndUpdate(
+                        { _id: cat._id },
+                        { $addToSet: { discordIds: interaction.user.id } }
+                    );
+                }
+                if (autoCategories.length > 0)
+                    console.log(`[REGISTER] เพิ่ม ${interaction.user.id} เข้าหมวด auto-assign ${autoCategories.length} หมวด (${autoCategories.map(c => c.categoryName).join(', ')})`);
+            } catch (err) {
+                console.error(`[REGISTER] error เพิ่ม staff category: ${err.message}`);
             }
 
             const finalName  = `${displayName} (${nickname})`;
