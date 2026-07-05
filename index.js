@@ -3035,7 +3035,13 @@ const Event = mongoose.model('Event', new mongoose.Schema({
     // ════════════════════════════════════════════════════════
     client.on('interactionCreate', async (interaction) => {
         if (!interaction.isButton()) return;
-        if (interaction.customId.startsWith('main_') || interaction.customId.startsWith('action_') || interaction.customId.startsWith('checkin_page||')) return;
+        if (
+            interaction.customId.startsWith('main_') ||
+            interaction.customId.startsWith('action_') ||
+            interaction.customId.startsWith('checkin_page||') ||
+            interaction.customId.startsWith('staffpanel||') ||
+            interaction.customId.startsWith('rlp||')
+        ) return;
 
         const {
             customId,
