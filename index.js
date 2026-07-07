@@ -80,6 +80,9 @@ client.setMaxListeners(20);
 const cooldownMap = new Map();
 const robloxListCache = new Map(); // cache สำหรับ /robloxlist pagination
 const robloxListTimers = new Map(); // timer สำหรับ expire cache
+// เก็บ interaction แรกที่สร้างข้อความ ephemeral ของ /staffpanel ต่อ (panelMessageId + userId)
+// ใช้ .editReply() ของ interaction เดิมนี้ทุกครั้งที่คนเดิมกดปุ่มจาก panel สาธารณะซ้ำ กันสร้าง ephemeral ใหม่ซ้อนกัน
+const staffPanelSessions = new Map();
 
 function checkCooldown(userId, eventId) {
     const key = `${userId}:${eventId}`;
@@ -283,18 +286,9 @@ const Event = mongoose.model('Event', new mongoose.Schema({
 
     // สร้างแค่ปุ่มกริดสำหรับ panel สาธารณะที่ค้างอยู่ในห้อง — ไม่มีเนื้อหาสมาชิกอยู่บนนี้เลย
     // เพราะถ้าโชว์เนื้อหาบน panel สาธารณะ พอมีหลายคนกดพร้อมกันจะแย่งกันเปลี่ยนหน้าเดียวกัน เห็นข้อมูลสลับไปมาแบบมั่ว
-    async function buildStaffPanelHeader() {
-        const categories = await StaffCategory.find({}).sort({ order: 1 });
-        if (categories.length === 0) {
-            return { content: '📭 ยังไม่มีหมวด Role เลย ใช้ /addcategory เพื่อสร้างหมวดแรกก่อนนะ', embeds: [], components: [] };
-        }
-
-        const embed = new EmbedBuilder()
-            .setTitle('👑 หมวด Role ทั้งหมด')
-            .setDescription('กดปุ่มหมวดที่ต้องการดู — ผลลัพธ์จะเห็นแค่คุณคนเดียวเท่านั้น')
-            .setColor(0x5865F2);
-
-        // Discord จำกัด 5 ปุ่ม/แถว, 5 แถว/ข้อความ (สูงสุด 25 ปุ่ม)
+    // สร้างปุ่มหมวดทั้งหมด ใช้ร่วมกันทั้ง panel สาธารณะและข้อความ ephemeral ส่วนตัว
+    // Discord จำกัด 5 ปุ่ม/แถว, 5 แถว/ข้อความ (สูงสุด 25 ปุ่ม) — ใช้ index เป็น customId เสมอ กัน customId เกิน 100 ตัวอักษรถ้าตั้งชื่อหมวดยาว
+    function buildCategoryButtons(categories) {
         const BUTTONS_PER_ROW = 5;
         const MAX_BUTTONS = 25;
         if (categories.length > MAX_BUTTONS) {
@@ -312,20 +306,34 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                         .setCustomId(`staffpanel||${catIndex}`)
                         .setEmoji(getCategoryIcon(c.categoryName))
                         .setLabel(c.categoryName.slice(0, 80)) // Discord จำกัด label ไม่เกิน 80 ตัวอักษร
-                        .setStyle(ButtonStyle.Secondary); // ไม่มีปุ่มไหน "active" อีกต่อไป เพราะแต่ละคนกดแล้วเห็นแค่ของตัวเอง
+                        .setStyle(ButtonStyle.Secondary);
                 })
             );
             components.push(row);
         }
-
-        return { embeds: [embed], components };
+        return components;
     }
 
-    // สร้าง embed ของหมวดเดียว ใช้ตอบแบบ ephemeral เท่านั้น (เห็นแค่คนกด ไม่กระทบ panel สาธารณะ)
+    async function buildStaffPanelHeader() {
+        const categories = await StaffCategory.find({}).sort({ order: 1 });
+        if (categories.length === 0) {
+            return { content: '📭 ยังไม่มีหมวด Role เลย ใช้ /addcategory เพื่อสร้างหมวดแรกก่อนนะ', embeds: [], components: [] };
+        }
+
+        const embed = new EmbedBuilder()
+            .setTitle('👑 หมวด Role ทั้งหมด')
+            .setDescription('กดปุ่มหมวดที่ต้องการดู — ผลลัพธ์จะเห็นแค่คุณคนเดียวเท่านั้น')
+            .setColor(0x5865F2);
+
+        return { embeds: [embed], components: buildCategoryButtons(categories) };
+    }
+
+    // สร้าง embed + ปุ่มของหมวดเดียว ใช้ตอบแบบ ephemeral เท่านั้น (เห็นแค่คนกด ไม่กระทบ panel สาธารณะ)
+    // แนบปุ่มชุดเดิมติดไปด้วย เพื่อให้กดเปลี่ยนหมวดต่อได้ในข้อความ ephemeral ของตัวเอง (แก้ไขในที่เดิม ไม่สร้างซ้อนใหม่)
     async function buildCategoryEmbed(guild, index) {
         const categories = await StaffCategory.find({}).sort({ order: 1 });
         if (categories.length === 0) {
-            return { content: '📭 ไม่มีหมวด Role ในระบบแล้ว', embeds: [] };
+            return { content: '📭 ไม่มีหมวด Role ในระบบแล้ว', embeds: [], components: [] };
         }
 
         // กันกรณี index หลุดขอบ (เช่น หมวดถูกลบไปหลังสร้าง panel ไว้แล้ว)
@@ -367,7 +375,7 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             .setFooter({ text: `อัปเดตล่าสุด` })
             .setTimestamp();
 
-        return { embeds: [embed] };
+        return { embeds: [embed], components: buildCategoryButtons(categories) };
     }
 
     // ── safeReply: ป้องกัน DiscordAPIError[40060] ──────────
@@ -3441,17 +3449,50 @@ const Event = mongoose.model('Event', new mongoose.Schema({
     //  BUTTON: staffpanel|| (ดูสมาชิกในหมวด Role ที่กำหนดเอง)
     // ════════════════════════════════════════════════════════
     // ปุ่มนี้ไม่มีวันหมดอายุ (persistent) เพราะเช็คจาก customId prefix ตรงๆ ไม่ใช่ collector ที่มี timeout
-    // ตอบกลับแบบ ephemeral เสมอ (เห็นแค่คนกด) ไม่แก้ข้อความ panel สาธารณะ กันหลายคนกดพร้อมกันแล้วเห็นข้อมูลสลับกันมั่ว
+    // - กดจากในข้อความ ephemeral ของตัวเอง (นำทางต่อ) → update() แก้ไขข้อความเดิมตรงๆ
+    // - กดจาก panel สาธารณะ → เช็คก่อนว่าเคยเปิด ephemeral ไว้แล้วหรือยัง (เก็บใน staffPanelSessions)
+    //   ถ้าเคย: editReply() ของ interaction เดิมที่เก็บไว้ (แก้ข้อความเดิม) แล้ว deferUpdate() ปิด interaction ปัจจุบันแบบเงียบๆ ไม่แตะ panel สาธารณะ
+    //   ถ้ายังไม่เคย (หรือ session หมดอายุ/แก้ไม่ได้แล้ว): reply() สร้างใหม่ แล้วเก็บ session ไว้ใช้ครั้งต่อไป
     client.on('interactionCreate', async (interaction) => {
         if (!interaction.isButton()) return;
         if (!interaction.customId.startsWith('staffpanel||')) return;
 
         const parts = interaction.customId.split('||');
         const index = parseInt(parts[1]);
+        const clickedOnEphemeral = interaction.message.flags?.has(MessageFlags.Ephemeral);
 
         try {
             const categoryData = await buildCategoryEmbed(interaction.guild, index);
+
+            if (clickedOnEphemeral) {
+                // นำทางต่อภายในข้อความ ephemeral ของตัวเอง — แก้ไขตรงๆ ผ่าน interaction ปัจจุบัน
+                await interaction.update(categoryData);
+                return;
+            }
+
+            // กดจาก panel สาธารณะ — เช็คว่าเคยเปิด ephemeral ของตัวเองไว้แล้วหรือยัง
+            const sessionKey = `${interaction.message.id}_${interaction.user.id}`;
+            const session = staffPanelSessions.get(sessionKey);
+
+            if (session) {
+                try {
+                    await session.interaction.editReply(categoryData);
+                    await interaction.deferUpdate(); // ปิด interaction ปัจจุบันเงียบๆ ไม่โชว์อะไรเพิ่ม ไม่แตะ panel สาธารณะ
+                    clearTimeout(session.timeout);
+                    session.timeout = setTimeout(() => staffPanelSessions.delete(sessionKey), 14 * 60_000);
+                    return;
+                } catch (err) {
+                    // session เก่าใช้ไม่ได้แล้ว (เช่น webhook token หมดอายุเกิน 15 นาที) — ลบทิ้งแล้วสร้างใหม่ด้านล่าง
+                    console.log(`[STAFFPANEL] session เก่าใช้ไม่ได้แล้ว สร้างใหม่: ${err.message}`);
+                    clearTimeout(session.timeout);
+                    staffPanelSessions.delete(sessionKey);
+                }
+            }
+
+            // ไม่มี session อยู่ก่อน (หรือของเก่าหมดอายุไปแล้ว) — สร้าง ephemeral ใหม่ แล้วเก็บ session ไว้ใช้ครั้งต่อไป
             await interaction.reply({ ...categoryData, flags: [MessageFlags.Ephemeral] });
+            const timeout = setTimeout(() => staffPanelSessions.delete(sessionKey), 14 * 60_000);
+            staffPanelSessions.set(sessionKey, { interaction, timeout });
         } catch (err) {
             console.error(`[STAFFPANEL] error (button): ${err.message}`);
             try {
