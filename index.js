@@ -80,9 +80,6 @@ client.setMaxListeners(20);
 const cooldownMap = new Map();
 const robloxListCache = new Map(); // cache สำหรับ /robloxlist pagination
 const robloxListTimers = new Map(); // timer สำหรับ expire cache
-// เก็บ interaction แรกที่สร้างข้อความ ephemeral ของ /staffpanel ต่อ (panelMessageId + userId)
-// ใช้ .editReply() ของ interaction เดิมนี้ทุกครั้งที่คนเดิมกดปุ่มจาก panel สาธารณะซ้ำ กันสร้าง ephemeral ใหม่ซ้อนกัน
-const staffPanelSessions = new Map();
 
 function checkCooldown(userId, eventId) {
     const key = `${userId}:${eventId}`;
@@ -870,6 +867,9 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             .setName('removecategory')
             .setDescription('[แอดมิน] ลบหมวด Role ที่กำหนดเองทิ้ง')
             .addStringOption(o => o.setName('categoryname').setDescription('ชื่อหมวดที่จะลบ').setRequired(true).setAutocomplete(true)),
+        new SlashCommandBuilder()
+            .setName('categorylist')
+            .setDescription('[แอดมิน] ดูรายชื่อหมวด Role ทั้งหมดแบบ raw (ช่วยเช็คอักขระแปลกปนที่ทำให้ปุ่มเพี้ยน)'),
         new SlashCommandBuilder()
             .setName('assignstaff')
             .setDescription('[แอดมิน] เพิ่มสมาชิกเข้าหมวด Role ที่กำหนดเอง')
@@ -1662,6 +1662,32 @@ const Event = mongoose.model('Event', new mongoose.Schema({
                 return safeReply(interaction, E('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ'));
             }
         }
+
+        // /categorylist — [แอดมิน] ดู raw ของชื่อหมวดทั้งหมด ช่วยเช็คอักขระแปลกปน (invisible character) ที่ทำให้ปุ่มเพี้ยน
+        if (commandName === 'categorylist') {
+            if (!hasPermission(member))
+                return safeReply(interaction, E('❌ เฉพาะแอดมินหรือสตาฟเท่านั้นนะ'));
+
+            try {
+                const categories = await StaffCategory.find({}).sort({ order: 1 });
+                if (categories.length === 0)
+                    return safeReply(interaction, E('📭 ยังไม่มีหมวด Role เลย'));
+
+                const lines = categories.map((c, i) => {
+                    // แสดงความยาวจริงของ string เทียบกับความยาวที่มองเห็น ถ้าไม่ตรงกันแปลว่ามีอักขระแฝงอยู่
+                    const visibleLength = [...c.categoryName].length; // นับ code point ไม่ใช่ UTF-16 unit กันนับ emoji ผิด
+                    const hasHidden = c.categoryName !== c.categoryName.trim() || /[\u200B-\u200D\uFEFF\u00A0]/.test(c.categoryName);
+                    return `${String(i).padStart(2, '0')} | order=${c.order} | "${c.categoryName}" | ยาว ${visibleLength} ตัวอักษร${hasHidden ? ' ⚠️ พบอักขระแฝง/เว้นวรรคเกิน!' : ''}`;
+                });
+
+                const content = '```\n' + lines.join('\n').slice(0, 1900) + '\n```';
+                return safeReply(interaction, { content, flags: [MessageFlags.Ephemeral] });
+            } catch (err) {
+                console.error(`[CATEGORYLIST] error: ${err.message}`);
+                return safeReply(interaction, E('❌ เกิดข้อผิดพลาด ลองใหม่อีกครั้งนะ'));
+            }
+        }
+
 
         // /assignstaff — [แอดมิน] เพิ่มสมาชิกเข้าหมวด Role ที่กำหนดเอง (atomic กัน race condition)
         if (commandName === 'assignstaff') {
@@ -3449,10 +3475,11 @@ const Event = mongoose.model('Event', new mongoose.Schema({
     //  BUTTON: staffpanel|| (ดูสมาชิกในหมวด Role ที่กำหนดเอง)
     // ════════════════════════════════════════════════════════
     // ปุ่มนี้ไม่มีวันหมดอายุ (persistent) เพราะเช็คจาก customId prefix ตรงๆ ไม่ใช่ collector ที่มี timeout
-    // - กดจากในข้อความ ephemeral ของตัวเอง (นำทางต่อ) → update() แก้ไขข้อความเดิมตรงๆ
-    // - กดจาก panel สาธารณะ → เช็คก่อนว่าเคยเปิด ephemeral ไว้แล้วหรือยัง (เก็บใน staffPanelSessions)
-    //   ถ้าเคย: editReply() ของ interaction เดิมที่เก็บไว้ (แก้ข้อความเดิม) แล้ว deferUpdate() ปิด interaction ปัจจุบันแบบเงียบๆ ไม่แตะ panel สาธารณะ
-    //   ถ้ายังไม่เคย (หรือ session หมดอายุ/แก้ไม่ได้แล้ว): reply() สร้างใหม่ แล้วเก็บ session ไว้ใช้ครั้งต่อไป
+    // - กดจากในข้อความ ephemeral ของตัวเอง (นำทางต่อ) → update() แก้ไขข้อความเดิมตรงๆ ปลอดภัย เพราะถ้า dismiss ไปแล้วกดปุ่มนั้นไม่ได้อยู่ดี
+    // - กดจาก panel สาธารณะ → reply() สร้าง ephemeral ใหม่เสมอ
+    //   หมายเหตุ: เคยลองจำ session ไว้แก้ไขข้อความเดิมตอนกดจาก panel สาธารณะซ้ำ แต่ยกเลิกไปแล้ว
+    //   เพราะ Discord ไม่มีทางบอกบอทได้ว่าผู้ใช้กด "Dismiss message" ปิดไปแล้วหรือยัง ถ้าไปแก้ข้อความที่ถูกปิดไปแล้ว
+    //   จะสำเร็จเงียบๆ แต่ผู้ใช้ไม่เห็นอะไรเลยเพราะข้อความถูกซ่อนไปแล้ว (ดูเหมือนปุ่มไม่ทำงาน)
     client.on('interactionCreate', async (interaction) => {
         if (!interaction.isButton()) return;
         if (!interaction.customId.startsWith('staffpanel||')) return;
@@ -3467,32 +3494,10 @@ const Event = mongoose.model('Event', new mongoose.Schema({
             if (clickedOnEphemeral) {
                 // นำทางต่อภายในข้อความ ephemeral ของตัวเอง — แก้ไขตรงๆ ผ่าน interaction ปัจจุบัน
                 await interaction.update(categoryData);
-                return;
+            } else {
+                // กดจาก panel สาธารณะ — สร้าง ephemeral ใหม่เสมอ
+                await interaction.reply({ ...categoryData, flags: [MessageFlags.Ephemeral] });
             }
-
-            // กดจาก panel สาธารณะ — เช็คว่าเคยเปิด ephemeral ของตัวเองไว้แล้วหรือยัง
-            const sessionKey = `${interaction.message.id}_${interaction.user.id}`;
-            const session = staffPanelSessions.get(sessionKey);
-
-            if (session) {
-                try {
-                    await session.interaction.editReply(categoryData);
-                    await interaction.deferUpdate(); // ปิด interaction ปัจจุบันเงียบๆ ไม่โชว์อะไรเพิ่ม ไม่แตะ panel สาธารณะ
-                    clearTimeout(session.timeout);
-                    session.timeout = setTimeout(() => staffPanelSessions.delete(sessionKey), 14 * 60_000);
-                    return;
-                } catch (err) {
-                    // session เก่าใช้ไม่ได้แล้ว (เช่น webhook token หมดอายุเกิน 15 นาที) — ลบทิ้งแล้วสร้างใหม่ด้านล่าง
-                    console.log(`[STAFFPANEL] session เก่าใช้ไม่ได้แล้ว สร้างใหม่: ${err.message}`);
-                    clearTimeout(session.timeout);
-                    staffPanelSessions.delete(sessionKey);
-                }
-            }
-
-            // ไม่มี session อยู่ก่อน (หรือของเก่าหมดอายุไปแล้ว) — สร้าง ephemeral ใหม่ แล้วเก็บ session ไว้ใช้ครั้งต่อไป
-            await interaction.reply({ ...categoryData, flags: [MessageFlags.Ephemeral] });
-            const timeout = setTimeout(() => staffPanelSessions.delete(sessionKey), 14 * 60_000);
-            staffPanelSessions.set(sessionKey, { interaction, timeout });
         } catch (err) {
             console.error(`[STAFFPANEL] error (button): ${err.message}`);
             try {
